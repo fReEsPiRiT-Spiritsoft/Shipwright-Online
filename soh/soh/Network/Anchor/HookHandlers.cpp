@@ -553,6 +553,10 @@ void Anchor::RegisterHooks() {
         trackedEnemyHealth.clear();
         trackedNonAuthEnemyHealth.clear();
         pendingRemoteHealthOverride.clear();
+        trackedEnemyPos.clear();
+        // Enemies respawn on every room entry, so per-scene kill lists are stale
+        // after a scene transition.  Clear to avoid phantom kills on next visit.
+        pendingRoomKills.clear();
     });
 
     // Non-authority: intercept damage BEFORE the actor processes it.
@@ -560,8 +564,15 @@ void Anchor::RegisterHooks() {
     // damage locally, which in turn prevents local HP reduction, local death states,
     // and local Actor_Kill() calls.  The raw damage value is forwarded to the authority
     // so it can apply the canonical hit and re-broadcast the result to all clients.
+    // NOTE: This hook fires even when ShouldActorUpdate returns false (see z_actor.c),
+    //       so it works correctly for frozen enemies.
     COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+        // Only intercept when the authority is present in our room.
+        // When the authority is elsewhere, damage is applied locally so the
+        // client can kill enemies independently; those kills are tracked for
+        // the ROOM_KILL_SYNC when the authority later enters the room.
+        if (!IsOwnerInSameRoom()) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
@@ -570,28 +581,100 @@ void Anchor::RegisterHooks() {
         u8 damage = actor->colChkInfo.damage;
         actor->colChkInfo.damage = 0; // Prevent local HP reduction and death state
         SendPacket_PlayerAttackActor(actor, damage);
+        // Visual hit feedback: red flash so the player sees that the hit connected.
+        // The enemy AI is frozen on the client, so we trigger the color filter manually.
+        Actor_SetColorFilter(actor, 0x4000, 0xFF, 0, 8);
     });
 
-    // Authority: broadcast enemy HP + position changes every time an enemy actor updates.
-    // Only fires for ENEMY and BOSS category actors; only sends a packet when HP actually changed.
-    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+    // Authority: aggro-fake — set each enemy's target to whichever player
+    // (host-Link or a connected client's dummy) is closest before the actor
+    // runs its own AI.  This makes enemies naturally split aggro between players.
+    COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+        if (!IsAnyClientInSameRoom()) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
-        if (actor->colChkInfo.health == 0) return; // death will be handled by OnActorKill
+        if (!gPlayState) return;
+
+        Player* hostLink = GET_PLAYER(gPlayState);
+        Actor*  nearest  = (Actor*)hostLink;
+        Vec3f   enemyPos = actor->world.pos;
+        f32 nearestDistSq = Math3D_Vec3fDistSq(&enemyPos, &hostLink->actor.world.pos);
+
+        for (auto& [id, client] : clients) {
+            if (client.self || !client.online || !client.player) continue;
+            if (client.sceneNum != gPlayState->sceneNum) continue;
+            if (client.curRoomNum != (s8)gPlayState->roomCtx.curRoom.num) continue;
+
+            Vec3f clientPos = client.player->actor.world.pos;
+            f32 distSq = Math3D_Vec3fDistSq(&enemyPos, &clientPos);
+            if (distSq < nearestDistSq) {
+                nearestDistSq = distSq;
+                nearest = (Actor*)client.player;
+            }
+        }
+
+        // Override the pre-computed distance/angle fields so the enemy AI
+        // believes the nearest player is the one we chose above.
+        // These fields are written by the engine before actor->update() runs,
+        // so overriding them in OnBeforeActorUpdate is safe and effective.
+        if (nearest != (Actor*)hostLink) {
+            Vec3f& nPos = nearest->world.pos;
+            f32 dx = nPos.x - enemyPos.x;
+            f32 dz = nPos.z - enemyPos.z;
+            actor->xyzDistToPlayerSq = nearestDistSq;
+            actor->xzDistToPlayer = sqrtf(dx * dx + dz * dz);
+            actor->yDistToPlayer = nPos.y - enemyPos.y;
+            actor->yawTowardsPlayer = (s16)(atan2f(dx, dz) * (32768.0f / (float)M_PI));
+        }
+    });
+
+    // Authority: broadcast enemy position every frame when it has moved, and
+    // broadcast HP whenever it changes.  Only fires when at least one client
+    // is in the same scene+room (room-check gate).
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+        if (!IsAnyClientInSameRoom()) return;
+
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        if (actor->colChkInfo.health == 0) return; // death handled by OnActorKill
 
         std::string key = GetActorKey(actor, gPlayState->sceneNum);
         u8 currentHealth = actor->colChkInfo.health;
 
-        auto it = trackedEnemyHealth.find(key);
-        if (it != trackedEnemyHealth.end() && it->second != currentHealth) {
-            // Health changed since last frame - broadcast new HP + current position
-            SendPacket_ActorStateUpdate(actor);
+        bool healthChanged = false;
+        auto hpIt = trackedEnemyHealth.find(key);
+        if (hpIt != trackedEnemyHealth.end() && hpIt->second != currentHealth) {
+            healthChanged = true;
         }
         trackedEnemyHealth[key] = currentHealth;
+
+        // Check whether position moved enough to warrant a packet.
+        bool posChanged = false;
+        auto posIt = trackedEnemyPos.find(key);
+        if (posIt == trackedEnemyPos.end()) {
+            posChanged = true; // first time we've seen this enemy
+        } else {
+            Vec3f& last = posIt->second;
+            f32 distSq = Math3D_Vec3fDistSq(&actor->world.pos, &last);
+            posChanged = (distSq > 4.0f); // ≈2 world-unit threshold
+        }
+
+        if (healthChanged || posChanged) {
+            // Send a dedicated position packet (cheaper than ActorStateUpdate).
+            // On HP change we still send ActorStateUpdate for compatibility with
+            // the existing health-sync logic on the receiver side.
+            if (healthChanged) {
+                SendPacket_ActorStateUpdate(actor);
+            }
+            SendPacket_EnemyPositionUpdate(actor);
+            trackedEnemyPos[key] = actor->world.pos;
+        }
     });
 
+    // Non-authority: freeze enemy AI when the authority is in the same scene+room.
     // Non-authority: keep tracking remote HP overrides so we don't echo them back.
     // Local player hits are now intercepted in OnBeforeActorUpdate above; this hook
     // only needs to clear confirmed remote overrides and keep the tracking map current.
@@ -622,7 +705,57 @@ void Anchor::RegisterHooks() {
 
         std::string key = GetActorKey(actor, gPlayState->sceneNum);
         trackedEnemyHealth.erase(key);
+        trackedEnemyPos.erase(key);
         SendPacket_ActorKilled(actor);
+
+        // If no client is in our room, record this kill so it can be
+        // re-applied via ROOM_KILL_SYNC when a client enters later.
+        if (!IsAnyClientInSameRoom() && gPlayState) {
+            std::string roomKey = std::to_string(gPlayState->sceneNum) + "_" +
+                                  std::to_string((s8)gPlayState->roomCtx.curRoom.num);
+            pendingRoomKills[roomKey].insert(key);
+        }
+    });
+
+    // Non-authority: track enemies we killed locally while the authority was
+    // absent.  These are queued for ROOM_KILL_SYNC when the authority arrives.
+    COND_HOOK(OnActorKill, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+        if (IsOwnerInSameRoom()) return; // authority already sees this via normal sync
+        if (!gPlayState) return;
+
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+
+        std::string roomKey = std::to_string(gPlayState->sceneNum) + "_" +
+                              std::to_string((s8)gPlayState->roomCtx.curRoom.num);
+        pendingRoomKills[roomKey].insert(GetActorKey(actor, gPlayState->sceneNum));
+    });
+
+    // Both sides: detect when the other player enters our room and immediately
+    // flush the pending kill list via ROOM_KILL_SYNC so they see the same
+    // enemy state we have.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        static bool lastOwnerInSameRoom    = false;
+        static bool lastClientInSameRoom   = false;
+
+        if (!IsSaveLoaded()) {
+            lastOwnerInSameRoom  = false;
+            lastClientInSameRoom = false;
+            return;
+        }
+
+        bool ownerNow  = !IsEnemyAuthority() && IsOwnerInSameRoom();
+        bool clientNow =  IsEnemyAuthority() && IsAnyClientInSameRoom();
+
+        // Transition false → true: the other player just entered the room
+        if (!IsEnemyAuthority() && !lastOwnerInSameRoom && ownerNow)
+            SendPacket_RoomKillSync();
+        if (IsEnemyAuthority() && !lastClientInSameRoom && clientNow)
+            SendPacket_RoomKillSync();
+
+        lastOwnerInSameRoom  = ownerNow;
+        lastClientInSameRoom = clientNow;
     });
 
     // #endregion

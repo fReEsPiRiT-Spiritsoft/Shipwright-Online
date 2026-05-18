@@ -133,6 +133,10 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_ActorKilled(payload);
             else if (packetType == ACTOR_STATE_UPDATE)
                 HandlePacket_ActorStateUpdate(payload);
+            else if (packetType == ENEMY_POSITION_UPDATE)
+                HandlePacket_EnemyPositionUpdate(payload);
+            else if (packetType == ROOM_KILL_SYNC)
+                HandlePacket_RoomKillSync(payload);
             else if (packetType == PLAYER_ATTACK_ACTOR)
                 HandlePacket_PlayerAttackActor(payload);
             else if (packetType == DAMAGE_PLAYER)
@@ -147,8 +151,6 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_GiveItem(payload);
             else if (packetType == OCARINA_SFX)
                 HandlePacket_OcarinaSfx(payload);
-            else if (packetType == PLAYER_ATTACK_ACTOR)
-                HandlePacket_PlayerAttackActor(payload);
             else if (packetType == PLAYER_UPDATE)
                 HandlePacket_PlayerUpdate(payload);
             else if (packetType == PLAYER_SFX)

@@ -3,10 +3,12 @@ I am trying to make a server/client version of SoH to fully synchronize the co-o
 Feature Complete:
 
     The kill state of any enemy is now synchronized for all players!
+    Enemy Animation and Position sync
 
 ToDo:
+
 * Fix Client Damage (Send hit events from Client to Host)
-* Animation and Position sync
+
 
 <img width="1756" height="592" alt="soH logo" src="https://github.com/user-attachments/assets/c4e2d146-0f84-4cb8-aff2-dcfc9d52bd06" />
 

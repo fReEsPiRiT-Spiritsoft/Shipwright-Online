@@ -96,6 +96,15 @@ class Anchor : public Network {
     // Entry is erased after one confirmed observation in OnActorUpdate.
     std::unordered_map<std::string, u8> pendingRemoteHealthOverride;
 
+    // Authority: tracks last broadcast position of each enemy so we only send
+    // EnemyPositionUpdate when the enemy has actually moved.
+    std::unordered_map<std::string, Vec3f> trackedEnemyPos;
+
+    // Both sides: enemies killed while the other player was NOT in the same room,
+    // keyed by "sceneNum_roomNum" → set of actorKeys.  Flushed as a ROOM_KILL_SYNC
+    // packet the moment the other player enters the room.
+    std::map<std::string, std::set<std::string>> pendingRoomKills;
+
     nlohmann::json PrepClientState();
     nlohmann::json PrepRoomState();
     void RegisterHooks();
@@ -107,6 +116,8 @@ class Anchor : public Network {
     void HandlePacket_AllClientState(nlohmann::json payload);
     void HandlePacket_ActorKilled(nlohmann::json payload);
     void HandlePacket_ActorStateUpdate(nlohmann::json payload);
+    void HandlePacket_EnemyPositionUpdate(nlohmann::json payload);
+    void HandlePacket_RoomKillSync(nlohmann::json payload);
     void HandlePacket_PlayerAttackActor(nlohmann::json payload);
     void HandlePacket_ConsumeAdultTradeItem(nlohmann::json payload);
     void HandlePacket_DamagePlayer(nlohmann::json payload);
@@ -138,6 +149,8 @@ class Anchor : public Network {
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
     inline static const std::string ACTOR_KILLED = "ACTOR_KILLED";
     inline static const std::string ACTOR_STATE_UPDATE = "ACTOR_STATE_UPDATE";
+    inline static const std::string ENEMY_POSITION_UPDATE = "ENEMY_POSITION_UPDATE";
+    inline static const std::string ROOM_KILL_SYNC        = "ROOM_KILL_SYNC";
     inline static const std::string PLAYER_ATTACK_ACTOR = "PLAYER_ATTACK_ACTOR";
     inline static const std::string DAMAGE_PLAYER = "DAMAGE_PLAYER";
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
@@ -182,6 +195,10 @@ class Anchor : public Network {
     void SendPacket_ClearTeamState(std::string teamId);
     void SendPacket_ActorKilled(const Actor* actor);
     void SendPacket_ActorStateUpdate(const Actor* actor);
+    void SendPacket_EnemyPositionUpdate(const Actor* actor);
+    void SendPacket_RoomKillSync();
+    bool IsAnyClientInSameRoom() const;
+    bool IsOwnerInSameRoom() const;
     void SendPacket_PlayerAttackActor(const Actor* actor, u8 damage);
     void SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage);
     void SendPacket_EntranceDiscovered(u16 entranceIndex);

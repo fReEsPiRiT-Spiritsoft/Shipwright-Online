@@ -2685,8 +2685,10 @@ void Actor_UpdateAll(PlayState* play, ActorContext* actorCtx) {
                     if (actor->colorFilterTimer != 0) {
                         actor->colorFilterTimer--;
                     }
+                    // OnBeforeActorUpdate always runs (even when ShouldActorUpdate = false)
+                    // so that non-authority damage interception works even for frozen enemies.
+                    GameInteractor_ExecuteOnBeforeActorUpdate(actor);
                     if (GameInteractor_ShouldActorUpdate(actor)) {
-                        GameInteractor_ExecuteOnBeforeActorUpdate(actor);
                         actor->update(actor, play);
                         GameInteractor_ExecuteOnActorUpdate(actor);
                     }

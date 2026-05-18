@@ -12,17 +12,25 @@ extern PlayState* gPlayState;
  * PLAYER_ATTACK_ACTOR
  *
  * Sent by a non-authority client when the local player damages an enemy.
- * The enemy authority receives this and applies the HP delta to its local copy
- * so that the authoritative health value stays consistent.
+ *
+ * Timing note (important for correctness):
+ *   ProcessIncomingPacketQueue() is called from OnGameFrameUpdate in game.c,
+ *   which fires AFTER Play_Update() (CollisionCheck + Actor_UpdateAll) for
+ *   the current frame.  This means the handler runs AFTER the actor loop.
+ *
+ *   We therefore set actor->colChkInfo.damage and let the NEXT frame's
+ *   Actor_UpdateAll call the enemy's own update() → Actor_ApplyDamage().
+ *   This gives the host the full natural hit response: hit flash, stagger,
+ *   damage sounds, and the normal death sequence (Actor_Kill → OnActorKill
+ *   → SendPacket_ActorKilled).
  *
  * Flow:
- *   1. Non-authority's OnActorUpdate detects enemy health decrease caused by local gameplay.
- *   2. Non-authority sends PLAYER_ATTACK_ACTOR with the HP delta to the authority (room owner).
- *   3. Authority applies the delta to its local actor.
- *   4. Authority's normal ActorStateUpdate / ActorKilled flow then syncs the result to everyone.
- *
- * The non-authority still sees the damage locally (visual feedback), but the authority's
- * state is the canonical one that all clients converge to.
+ *   Client:  OnBeforeActorUpdate detects colChkInfo.damage > 0
+ *            → zeroes local damage (no local HP change)
+ *            → sends PLAYER_ATTACK_ACTOR(actorKey, damage)
+ *   Host:    HandlePacket_PlayerAttackActor sets colChkInfo.damage
+ *            → next frame: actor->update() calls Actor_ApplyDamage
+ *            → death / OnActorKill / SendPacket_ActorKilled as normal
  */
 
 void Anchor::SendPacket_PlayerAttackActor(const Actor* actor, u8 damage) {
@@ -49,19 +57,32 @@ void Anchor::HandlePacket_PlayerAttackActor(nlohmann::json payload) {
     std::string actorKey = payload["actorKey"].get<std::string>();
     u8 damage            = payload["damage"].get<u8>();
 
-    // Locate the actor and apply the HP delta.
-    // Clamping to 1 so we don't accidentally kill — Actor_Kill comes via the
-    // actor's own death logic (which fires OnActorKill → SendPacket_ActorKilled).
+    // IMPORTANT: We cannot rely on queuing colChkInfo.damage and waiting for the
+    // enemy's own update() to call Actor_ApplyDamage().  Most enemies gate damage
+    // processing on the acHit pointer (set by CollisionCheck_ApplyDamage when an
+    // actual AT/OC collision occurs).  Since no real collision happens on the host
+    // machine for a client-side hit, acHit is never set, so queued damage is silently
+    // ignored.  We therefore apply damage directly here.
     for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
         Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
         while (actor != nullptr) {
             if (actor->colChkInfo.health > 0 &&
                 GetActorKey(actor, gPlayState->sceneNum) == actorKey)
             {
-                u8 currentHp = actor->colChkInfo.health;
-                // Apply damage — allow death (0) so the actor's action function can
-                // detect health == 0 and trigger its own death sequence.
-                actor->colChkInfo.health = (currentHp > damage) ? (currentHp - damage) : 0;
+                // Set damage so Actor_ApplyDamage() reads the correct value,
+                // then immediately apply it and clear the field so the actor's
+                // own update() does not double-apply it next frame.
+                actor->colChkInfo.damage = damage;
+                Actor_ApplyDamage(actor);
+                actor->colChkInfo.damage = 0;
+
+                // If the hit was lethal, kill immediately.  Actor_Kill fires
+                // OnActorKill → SendPacket_ActorKilled so all clients sync.
+                // We don't wait for the enemy's update() because it may never
+                // reach the health==0 death check without going through acHit.
+                if (actor->colChkInfo.health == 0) {
+                    Actor_Kill(actor);
+                }
                 return;
             }
             actor = actor->next;
