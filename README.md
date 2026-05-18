@@ -1,3 +1,5 @@
+> 🇩🇪 [Deutsche Version / German version](README_DE.md)
+
 I am trying to make a server/client version of SoH to fully synchronize the co-op game experience.
 
 # Features Added (Host-Authority Co-op Prototype)
