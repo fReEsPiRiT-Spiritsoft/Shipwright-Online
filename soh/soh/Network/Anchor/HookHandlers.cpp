@@ -732,6 +732,16 @@ void Anchor::RegisterHooks() {
         pendingRoomKills[roomKey].insert(GetActorKey(actor, gPlayState->sceneNum));
     });
 
+    // Both sides: when a dropped collectible is picked up, remove the matching
+    // item on the other side so only the faster player gets it.
+    COND_ID_HOOK(OnActorKill, ACTOR_EN_ITEM00, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (isRemovingRemoteItem) return; // this kill was triggered by HandlePacket_ItemPickup
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_MISC) return;
+        SendPacket_ItemPickup(actor);
+    });
+
     // Both sides: detect when the other player enters our room and immediately
     // flush the pending kill list via ROOM_KILL_SYNC so they see the same
     // enemy state we have.

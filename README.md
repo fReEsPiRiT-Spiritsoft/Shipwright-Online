@@ -1,13 +1,21 @@
 I am trying to make a server/client version of SoH to fully synchronize the co-op game experience.
 
-Feature Complete:
+# Features Added (Host-Authority Co-op Prototype)
 
-    The kill state of any enemy is now synchronized for all players!
-    Enemy Animation and Position sync
+This fork implements a Host-Authority Multiplayer Architecture designed for enemy and world synchronization during co-op and Randomizer play.
 
-ToDo:
+### Core Synchronization & Combat Mechanics
+* **Host-Authority Enemy Sync:** Forces the freeze flag on all client-side actors (`actor->flags |= ACTOR_FLAG_27` / `Actor_SetFreezeFlags`) when players are in the same room. Eliminates physics desyncs and rubberbanding by streaming `world.pos`, `world.rot.y`, and `skelAnime` states directly from the Host.
+* **Client-to-Host Damage Routing:** Hooks into the collision engine (`acHit` / `ColliderCylinder`) to intercept client-side weapon hits. The local damage calculation is intercepted on the client and forwarded via network packets to the Host. The Host evaluates the hit using native engine routines and triggers the synced death sequence.
+* **Dynamic Aggro Spoofing:** Evaluates distances (`Math3D_Vec3fDistSq`) on the Host between enemies and both players. If the client is closer, the enemy AI targeting pointer is swapped to the Client Dummy, forcing enemies to track and attack the client.
 
-* Fix Client Damage (Send hit events from Client to Host)
+### Dynamic World & Progression Logic
+* **Dynamic Room Switching:** Pauses network actor syncing when players separate into different scenes or rooms. Lifts the client-side freeze flags instantly, allowing the client to play against local single-player AI without causing memory or nullpointer crashes.
+* **State Merging & Re-Entry Catch-Up:** When players rejoin in the same area, the engine tracks who entered first. If the client cleared out enemies while exploring alone, a death list packet triggers `Actor_Kill` on those specific IDs on the Host before the Host-Authority sync hooks back in.
+
+### Environment & Global State
+* **Cross-Zone Day/Time Synchronization:** Synchronizes the global time state (`gSaveContext.dayTime`) across the network, enforcing the Host as the primary timekeeper.
+* **Global Time-Lock Feature:** Checks `sceneNum` for both players. If either the host or the client enters an area where time naturally stops (e.g., Kakariko Village, Market, Dungeons), the time counter freezes globally for both players, even if the other player is currently in Hyrule Field.
 
 
 <img width="1756" height="592" alt="soH logo" src="https://github.com/user-attachments/assets/c4e2d146-0f84-4cb8-aff2-dcfc9d52bd06" />

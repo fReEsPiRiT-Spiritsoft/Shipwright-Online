@@ -75,14 +75,8 @@ void Anchor::HandlePacket_PlayerAttackActor(nlohmann::json payload) {
                 actor->colChkInfo.damage = damage;
                 Actor_ApplyDamage(actor);
                 actor->colChkInfo.damage = 0;
-
-                // If the hit was lethal, kill immediately.  Actor_Kill fires
-                // OnActorKill → SendPacket_ActorKilled so all clients sync.
-                // We don't wait for the enemy's update() because it may never
-                // reach the health==0 death check without going through acHit.
-                if (actor->colChkInfo.health == 0) {
-                    Actor_Kill(actor);
-                }
+                // Let the enemy's own update() detect health == 0 next frame so the
+                // death animation plays and items drop before Actor_Kill is called.
                 return;
             }
             actor = actor->next;

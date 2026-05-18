@@ -131,6 +131,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_AllClientState(payload);
             else if (packetType == ACTOR_KILLED)
                 HandlePacket_ActorKilled(payload);
+            else if (packetType == ITEM_PICKUP)
+                HandlePacket_ItemPickup(payload);
             else if (packetType == ACTOR_STATE_UPDATE)
                 HandlePacket_ActorStateUpdate(payload);
             else if (packetType == ENEMY_POSITION_UPDATE)

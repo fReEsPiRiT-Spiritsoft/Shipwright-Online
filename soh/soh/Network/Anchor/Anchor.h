@@ -100,10 +100,13 @@ class Anchor : public Network {
     // EnemyPositionUpdate when the enemy has actually moved.
     std::unordered_map<std::string, Vec3f> trackedEnemyPos;
 
-    // Both sides: enemies killed while the other player was NOT in the same room,
-    // keyed by "sceneNum_roomNum" → set of actorKeys.  Flushed as a ROOM_KILL_SYNC
+    // Both sides: keyed by "sceneNum_roomNum" → set of actorKeys.  Flushed as a ROOM_KILL_SYNC
     // packet the moment the other player enters the room.
     std::map<std::string, std::set<std::string>> pendingRoomKills;
+
+    // Both sides: set to true while HandlePacket_ItemPickup removes an item via Actor_Kill
+    // so the resulting OnActorKill does not echo an ITEM_PICKUP back to the sender.
+    bool isRemovingRemoteItem = false;
 
     nlohmann::json PrepClientState();
     nlohmann::json PrepRoomState();
@@ -113,6 +116,7 @@ class Anchor : public Network {
 
     static std::string GetActorKey(const Actor* actor, s16 sceneNum);
 
+    void HandlePacket_ItemPickup(nlohmann::json payload);
     void HandlePacket_AllClientState(nlohmann::json payload);
     void HandlePacket_ActorKilled(nlohmann::json payload);
     void HandlePacket_ActorStateUpdate(nlohmann::json payload);
@@ -146,6 +150,7 @@ class Anchor : public Network {
     inline static const std::string clientVersion = (char*)gGitCommitHash;
 
     // Packet types //
+    inline static const std::string ITEM_PICKUP = "ITEM_PICKUP";
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
     inline static const std::string ACTOR_KILLED = "ACTOR_KILLED";
     inline static const std::string ACTOR_STATE_UPDATE = "ACTOR_STATE_UPDATE";
@@ -192,6 +197,7 @@ class Anchor : public Network {
     bool IsEnemyAuthority();
     uint32_t GetDummyPlayerClientId(const Actor* actor);
 
+    void SendPacket_ItemPickup(const Actor* actor);
     void SendPacket_ClearTeamState(std::string teamId);
     void SendPacket_ActorKilled(const Actor* actor);
     void SendPacket_ActorStateUpdate(const Actor* actor);
