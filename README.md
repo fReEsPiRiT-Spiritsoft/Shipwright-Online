@@ -8,8 +8,8 @@ ToDo:
 * Fix Client Damage (Send hit events from Client to Host)
 * Animation and Position sync
 
-![Ship of Harkinian](docs/shiptitle.darkmode.png#gh-dark-mode-only)
-![Ship of Harkinian](docs/shiptitle.lightmode.png#gh-light-mode-only)
+<img width="1756" height="592" alt="soH logo" src="https://github.com/user-attachments/assets/c4e2d146-0f84-4cb8-aff2-dcfc9d52bd06" />
+
 
 ## Website
 
