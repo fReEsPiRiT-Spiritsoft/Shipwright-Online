@@ -106,9 +106,22 @@ void Anchor::HandlePacket_GiveItem(nlohmann::json payload) {
         return;
     }
 
+    // Physical Item Exchange: park the item in the queue instead of giving it immediately.
+    // The OnGameFrameUpdate proximity check will call GiveNextPhysicalExchangeItem() when
+    // players are close enough.
+    if (roomState.physicalItemExchange) {
+        std::string itemName;
+        if (modId == MOD_NONE) {
+            itemName = SohUtils::GetItemName(getItemEntry.itemId);
+        } else {
+            itemName = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(getItemId)).GetName().english;
+        }
+        physicalItemQueue.push_back({modId, getItemId, client.name, itemName});
+        return;
+    }
+
     if (getItemEntry.modIndex == MOD_NONE) {
         if (getItemEntry.getItemId == GI_SWORD_BGS) {
-            gSaveContext.bgsFlag = true;
         }
         Item_Give(gPlayState, getItemEntry.itemId);
     } else if (getItemEntry.modIndex == MOD_RANDOMIZER) {
@@ -149,5 +162,46 @@ void Anchor::HandlePacket_GiveItem(nlohmann::json payload) {
                 .suffix = Rando::StaticData::RetrieveItem((RandomizerGet)getItemEntry.getItemId).GetName().english,
             });
         }
+    }
+}
+
+/**
+ * Physical Item Exchange: pop the next queued item from physicalItemQueue and
+ * give it to the local player using GiveItemEntryWithoutActor so the proper
+ * "hold item above head + fanfare" animation plays.  Must only be called when
+ * the player is in a state to receive items (checked by caller).
+ *
+ * physicalExchangeCurrentMsg is set here so the OnOpenText hook in
+ * HookHandlers.cpp can inject the "Du hast von [Name] das Item [Name] erhalten!"
+ * textbox for the reserved text ID PHYSICAL_EXCHANGE_TEXT_ID.
+ */
+void Anchor::GiveNextPhysicalExchangeItem() {
+    if (physicalItemQueue.empty() || !IsSaveLoaded() || !gPlayState) return;
+
+    Player* player = GET_PLAYER(gPlayState);
+    if (player->stateFlags1 & (PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_IN_ITEM_CS |
+                                PLAYER_STATE1_IN_CUTSCENE | PLAYER_STATE1_DEAD)) {
+        return;
+    }
+
+    PendingExchangeItem item = physicalItemQueue.front();
+    physicalItemQueue.pop_front();
+
+    GetItemEntry entry;
+    if (item.modId == MOD_NONE) {
+        entry = ItemTableManager::Instance->RetrieveItemEntry(MOD_NONE, item.getItemId);
+    } else {
+        entry = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(item.getItemId)).GetGIEntry_Copy();
+    }
+
+    // Build the in-game textbox text.
+    physicalExchangeCurrentMsg = "Du hast von %r" + item.senderName + "%w das Item&%r" + item.itemName + "%w erhalten!";
+
+    // Override the entry's textId so our OnOpenText hook fires for this message.
+    entry.textId = PHYSICAL_EXCHANGE_TEXT_ID;
+
+    if (!GiveItemEntryWithoutActor(gPlayState, entry)) {
+        // Player wasn't ready (e.g., in midair) — put the item back.
+        physicalItemQueue.push_front(item);
     }
 }

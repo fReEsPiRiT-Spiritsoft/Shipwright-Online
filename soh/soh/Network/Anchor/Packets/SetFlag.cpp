@@ -41,6 +41,12 @@ void Anchor::HandlePacket_SetFlag(nlohmann::json payload) {
     s16 flagType = payload.at("flagType").get<s16>();
     s16 flag = payload.at("flag").get<s16>();
 
+    // Physical Item Exchange: buffer the flag until players are close enough.
+    if (roomState.physicalItemExchange) {
+        physicalFlagQueue.push_back({sceneNum, flagType, flag});
+        return;
+    }
+
     if (sceneNum == SCENE_ID_MAX) {
         auto effect = new GameInteractionEffect::SetFlag();
         effect->parameters[0] = flagType;
@@ -69,5 +75,45 @@ void Anchor::HandlePacket_SetFlag(nlohmann::json payload) {
         effect->parameters[1] = flagType;
         effect->parameters[2] = flag;
         effect->Apply();
+    }
+}
+
+/**
+ * Physical Item Exchange: apply all buffered SetFlag entries that were held
+ * back while physicalItemExchange was active.  Call this from the proximity
+ * trigger in HookHandlers.cpp (OnGameFrameUpdate) when players are close.
+ */
+void Anchor::FlushPhysicalFlagQueue() {
+    while (!physicalFlagQueue.empty()) {
+        PendingExchangeFlag f = physicalFlagQueue.front();
+        physicalFlagQueue.pop_front();
+
+        if (f.sceneNum == SCENE_ID_MAX) {
+            auto effect = new GameInteractionEffect::SetFlag();
+            effect->parameters[0] = f.flagType;
+            effect->parameters[1] = f.flag;
+            effect->Apply();
+
+            // Special case: King Zora / Ruto's Letter
+            if (f.flagType == FLAG_EVENT_CHECK_INF && f.flag == EVENTCHKINF_KING_ZORA_MOVED &&
+                Inventory_HasSpecificBottle(ITEM_LETTER_RUTO)) {
+                Inventory_ReplaceItem(gPlayState, ITEM_LETTER_RUTO, ITEM_BOTTLE);
+            }
+        } else {
+            // Skip the same temple-specific flags that HandlePacket_SetFlag ignores.
+            if (f.sceneNum == SCENE_WATER_TEMPLE && f.flagType == FLAG_SCENE_SWITCH &&
+                (f.flag == 0x1C || f.flag == 0x1D || f.flag == 0x1E)) {
+                continue;
+            }
+            if (f.sceneNum == SCENE_FOREST_TEMPLE && f.flagType == FLAG_SCENE_SWITCH && f.flag == 0x1B) {
+                continue;
+            }
+
+            auto effect = new GameInteractionEffect::SetSceneFlag();
+            effect->parameters[0] = f.sceneNum;
+            effect->parameters[1] = f.flagType;
+            effect->parameters[2] = f.flag;
+            effect->Apply();
+        }
     }
 }

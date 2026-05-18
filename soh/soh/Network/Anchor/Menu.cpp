@@ -232,6 +232,68 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                              "normally stands still), time is frozen globally for both players."))) {
         anchor->SendPacket_UpdateRoomState();
     }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Enemy Sync");
+
+    if (UIWidgets::CVarCheckbox("Enable Enemy Sync", CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(false)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Master switch for custom enemy synchronization.\n\n"
+                                             "OFF: Enemies run in vanilla single-player mode for each client.\n"
+                                             "ON:  HP and kills are always synced globally in the same room.\n"
+                                             "     Position sync is further controlled by Sync Radius and Tick Rate."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+
+    bool enemySyncOn = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"), 0) != 0;
+    ImGui::BeginDisabled(!enemySyncOn);
+
+    {
+        int radius = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncRadius"), 1500);
+        UIWidgets::PushStyleSlider(THEME_COLOR);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (ImGui::SliderInt("##SyncRadius", &radius, 100, 5000, "Sync Radius: %d units")) {
+            CVarSetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncRadius"), radius);
+            Ship::Context::GetInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+            anchor->SendPacket_UpdateRoomState();
+        }
+        UIWidgets::PopStyleSlider();
+        UIWidgets::Tooltip("Enemies within this distance of a client's Link receive full position\n"
+                           "and animation sync from the host.\n\n"
+                           "Enemies outside this radius run their own local AI on the client;\n"
+                           "HP changes and kills are still synced globally regardless of radius.");
+    }
+
+    static const char* tickRates[] = { "5 Hz  (every 4th frame)", "10 Hz (every 2nd frame)", "20 Hz (every frame)" };
+    if (UIWidgets::CVarCombobox("Tick Rate:", CVAR_REMOTE_ANCHOR("RoomSettings.EnemySyncTickRate"), tickRates,
+                                UIWidgets::ComboboxOptions()
+                                    .DefaultIndex(2)
+                                    .LabelPosition(UIWidgets::LabelPositions::Above)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("How often position and animation data is broadcast for enemies\n"
+                                             "inside the Sync Radius.\n\n"
+                                             "20 Hz = every frame (smoothest, most bandwidth)\n"
+                                             "10 Hz = every 2nd frame\n"
+                                             " 5 Hz = every 4th frame (lowest bandwidth)"))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Physical Item Exchange");
+
+    if (UIWidgets::CVarCheckbox("Physical Item Exchange", CVAR_REMOTE_ANCHOR("RoomSettings.PhysicalItemExchange"),
+                                UIWidgets::CheckboxOptions()
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("When ON: received items and flags are held in a buffer until\n"
+                                             "both players are within ~1 metre of each other.\n"
+                                             "The receiving player then gets a proper item animation\n"
+                                             "and an in-game textbox: 'Du hast von [Name] [Item] erhalten!'\n\n"
+                                             "When OFF: items and flags are applied instantly (default)."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
 }
 
 void AnchorInstructionsMenu(WidgetInfo& info) {

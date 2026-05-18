@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <map>
 #include <queue>
+#include <deque>
 #include <mutex>
 
 extern "C" {
@@ -71,6 +72,10 @@ typedef struct {
     u8 syncItemsAndFlags; // 0 = off, 1 = on
     u8 syncHPAndCounts;   // 0 = per-player (HP & ammo counts separate), 1 = shared (default)
     u8 syncDayTime;       // 0 = off, 1 = on
+    u8  syncEnemies;           // 0 = off (vanilla), 1 = on (custom enemy sync)
+    u16 syncRadius;              // world-unit radius for pos/anim sync; 0 = unlimited
+    u8  enemySyncTickRate;       // 0=5Hz(every 4th frame), 1=10Hz(every 2nd), 2=20Hz(every frame)
+    u8  physicalItemExchange;    // 0 = instant sync (default), 1 = buffer until players are <100 units apart
 } RoomState;
 
 class Anchor : public Network {
@@ -110,6 +115,29 @@ class Anchor : public Network {
     // so the resulting OnActorKill does not echo an ITEM_PICKUP back to the sender.
     bool isRemovingRemoteItem = false;
 
+    // Physical Item Exchange: items/flags buffered until players are within proximity.
+    struct PendingExchangeItem {
+        u16 modId;
+        u16 getItemId;
+        std::string senderName;
+        std::string itemName;
+    };
+    struct PendingExchangeFlag {
+        s16 sceneNum;
+        s16 flagType;
+        s16 flag;
+    };
+    std::deque<PendingExchangeItem> physicalItemQueue;
+    std::deque<PendingExchangeFlag> physicalFlagQueue;
+    // Set before calling GiveItemEntryWithoutActor so the OnOpenText hook can
+    // inject the correct "Du hast von [Name] das Item [Name] erhalten!" text.
+    std::string physicalExchangeCurrentMsg;
+
+    // Reserved text ID for physical exchange messages (not used by vanilla OoT).
+    static constexpr uint16_t PHYSICAL_EXCHANGE_TEXT_ID = 0x9099;
+    // Proximity threshold: ~100 world units ≈ 1 OoT meter.
+    static constexpr float    PHYSICAL_EXCHANGE_DIST_SQ = 100.0f * 100.0f;
+
     // Client-side: true when the host's TIME_SYNC packet signals that time is frozen
     // (either player is in a timeless scene).  Client uses this to suppress local dayTime
     // advancement between sync packets.
@@ -118,6 +146,8 @@ class Anchor : public Network {
     nlohmann::json PrepClientState();
     nlohmann::json PrepRoomState();
     void RegisterHooks();
+    void GiveNextPhysicalExchangeItem();
+    void FlushPhysicalFlagQueue();
     void RefreshClientActors();
     void SetDummyPlayerClientId(const Actor* actor, uint32_t clientId);
 

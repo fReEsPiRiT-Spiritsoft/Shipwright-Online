@@ -2,6 +2,7 @@
 #include <libultraship/libultraship.h>
 #include "soh/Enhancements/cosmetics/cosmeticsTypes.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
+#include "soh/Enhancements/custom-message/CustomMessageManager.h"
 #include "soh/frame_interpolation.h"
 #include "soh/OTRGlobals.h"
 
@@ -560,42 +561,61 @@ void Anchor::RegisterHooks() {
     });
 
     // Non-authority: intercept damage BEFORE the actor processes it.
-    // Zeroing colChkInfo.damage prevents the enemy's own update() from applying the
-    // damage locally, which in turn prevents local HP reduction, local death states,
-    // and local Actor_Kill() calls.  The raw damage value is forwarded to the authority
-    // so it can apply the canonical hit and re-broadcast the result to all clients.
-    // NOTE: This hook fires even when ShouldActorUpdate returns false (see z_actor.c),
-    //       so it works correctly for frozen enemies.
+    // When enemy sync is ON and the enemy is within syncRadius: forward damage to
+    // the authority so it can apply the canonical hit.  Outside syncRadius or when
+    // sync is OFF: let damage apply locally (client controls that enemy).
     COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || IsEnemyAuthority()) return;
-        // Only intercept when the authority is present in our room.
-        // When the authority is elsewhere, damage is applied locally so the
-        // client can kill enemies independently; those kills are tracked for
-        // the ROOM_KILL_SYNC when the authority later enters the room.
+        if (!roomState.syncEnemies) return; // sync off → vanilla behaviour
         if (!IsOwnerInSameRoom()) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
         if (actor->colChkInfo.damage == 0) return; // no hit this frame
 
+        // Only intercept if the enemy is within the sync radius.
+        if (roomState.syncRadius > 0 && gPlayState) {
+            Player* localLink = GET_PLAYER(gPlayState);
+            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+            if (Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) > rSq) {
+                return; // outside radius: apply damage locally
+            }
+        }
+
         u8 damage = actor->colChkInfo.damage;
         actor->colChkInfo.damage = 0; // Prevent local HP reduction and death state
         SendPacket_PlayerAttackActor(actor, damage);
-        // Visual hit feedback: red flash so the player sees that the hit connected.
-        // The enemy AI is frozen on the client, so we trigger the color filter manually.
         Actor_SetColorFilter(actor, 0x4000, 0xFF, 0, 8);
     });
 
     // Authority: aggro-fake — set each enemy's target to whichever player
     // (host-Link or a connected client's dummy) is closest before the actor
-    // runs its own AI.  This makes enemies naturally split aggro between players.
+    // runs its own AI.  Only active when enemy sync is ON and the enemy is
+    // within syncRadius of at least one client in the same room.
     COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies) return;
         if (!IsAnyClientInSameRoom()) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
         if (!gPlayState) return;
+
+        // Skip aggro-fake for enemies outside the sync radius of all clients.
+        if (roomState.syncRadius > 0) {
+            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+            bool anyClientNearby = false;
+            for (auto& [id, client] : clients) {
+                if (client.self || !client.online || !client.player) continue;
+                if (client.sceneNum != gPlayState->sceneNum) continue;
+                if (client.curRoomNum != (s8)gPlayState->roomCtx.curRoom.num) continue;
+                if (Math3D_Vec3fDistSq(&actor->world.pos, &client.player->actor.world.pos) <= rSq) {
+                    anyClientNearby = true;
+                    break;
+                }
+            }
+            if (!anyClientNearby) return;
+        }
 
         Player* hostLink = GET_PLAYER(gPlayState);
         Actor*  nearest  = (Actor*)hostLink;
@@ -630,11 +650,12 @@ void Anchor::RegisterHooks() {
         }
     });
 
-    // Authority: broadcast enemy position every frame when it has moved, and
-    // broadcast HP whenever it changes.  Only fires when at least one client
-    // is in the same scene+room (room-check gate).
+    // Authority: broadcast enemy HP/kills always (when sync is on) and
+    // broadcast position only for enemies within syncRadius, throttled by
+    // enemySyncTickRate.
     COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies) return;
         if (!IsAnyClientInSameRoom()) return;
 
         Actor* actor = (Actor*)actorRef;
@@ -644,31 +665,53 @@ void Anchor::RegisterHooks() {
         std::string key = GetActorKey(actor, gPlayState->sceneNum);
         u8 currentHealth = actor->colChkInfo.health;
 
+        // ── HP sync: always, regardless of radius or tick rate ──────────────
         bool healthChanged = false;
         auto hpIt = trackedEnemyHealth.find(key);
         if (hpIt != trackedEnemyHealth.end() && hpIt->second != currentHealth) {
             healthChanged = true;
         }
         trackedEnemyHealth[key] = currentHealth;
+        if (healthChanged) {
+            SendPacket_ActorStateUpdate(actor);
+        }
 
-        // Check whether position moved enough to warrant a packet.
+        // ── Position sync: radius-gated + tick-rate throttled ───────────────
+        // Check if any client is within syncRadius of this enemy.
+        bool inRadius = true;
+        if (roomState.syncRadius > 0) {
+            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+            inRadius = false;
+            for (auto& [id, client] : clients) {
+                if (client.self || !client.online || !client.player) continue;
+                if (client.sceneNum != gPlayState->sceneNum) continue;
+                if (client.curRoomNum != (s8)gPlayState->roomCtx.curRoom.num) continue;
+                if (Math3D_Vec3fDistSq(&actor->world.pos, &client.player->actor.world.pos) <= rSq) {
+                    inRadius = true;
+                    break;
+                }
+            }
+        }
+
+        if (!inRadius) return; // outside radius: client runs local AI, no pos update
+
+        // Tick-rate throttle: 0=5Hz(÷4), 1=10Hz(÷2), 2=20Hz(÷1)
+        u8 tickIdx = roomState.enemySyncTickRate < 3 ? roomState.enemySyncTickRate : 2;
+        u32 div = (tickIdx == 0) ? 4u : (tickIdx == 1) ? 2u : 1u;
+        if ((gPlayState->state.frames % div) != 0) return;
+
+        // Position-change threshold (still apply even with tick rate to avoid
+        // flooding identical data on frames that do fire).
         bool posChanged = false;
         auto posIt = trackedEnemyPos.find(key);
         if (posIt == trackedEnemyPos.end()) {
-            posChanged = true; // first time we've seen this enemy
+            posChanged = true;
         } else {
-            Vec3f& last = posIt->second;
-            f32 distSq = Math3D_Vec3fDistSq(&actor->world.pos, &last);
-            posChanged = (distSq > 4.0f); // ≈2 world-unit threshold
+            f32 distSq = Math3D_Vec3fDistSq(&actor->world.pos, &posIt->second);
+            posChanged = (distSq > 4.0f);
         }
 
-        if (healthChanged || posChanged) {
-            // Send a dedicated position packet (cheaper than ActorStateUpdate).
-            // On HP change we still send ActorStateUpdate for compatibility with
-            // the existing health-sync logic on the receiver side.
-            if (healthChanged) {
-                SendPacket_ActorStateUpdate(actor);
-            }
+        if (posChanged) {
             SendPacket_EnemyPositionUpdate(actor);
             trackedEnemyPos[key] = actor->world.pos;
         }
@@ -676,10 +719,9 @@ void Anchor::RegisterHooks() {
 
     // Non-authority: freeze enemy AI when the authority is in the same scene+room.
     // Non-authority: keep tracking remote HP overrides so we don't echo them back.
-    // Local player hits are now intercepted in OnBeforeActorUpdate above; this hook
-    // only needs to clear confirmed remote overrides and keep the tracking map current.
     COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
@@ -699,6 +741,7 @@ void Anchor::RegisterHooks() {
     // Authority: broadcast enemy deaths so all clients can kill their local copy.
     COND_HOOK(OnActorKill, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
@@ -717,11 +760,14 @@ void Anchor::RegisterHooks() {
         }
     });
 
-    // Non-authority: track enemies we killed locally while the authority was
-    // absent.  These are queued for ROOM_KILL_SYNC when the authority arrives.
+    // Non-authority: track all locally-killed enemies so the authority never
+    // sees them alive again — regardless of whether it was in the room or not.
+    // If the authority is currently in the same room (e.g. the enemy was outside
+    // the sync radius), send ROOM_KILL_SYNC immediately.  Otherwise the kill is
+    // queued and flushed when the authority next enters this room.
     COND_HOOK(OnActorKill, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || IsEnemyAuthority()) return;
-        if (IsOwnerInSameRoom()) return; // authority already sees this via normal sync
+        if (!roomState.syncEnemies) return;
         if (!gPlayState) return;
 
         Actor* actor = (Actor*)actorRef;
@@ -730,6 +776,11 @@ void Anchor::RegisterHooks() {
         std::string roomKey = std::to_string(gPlayState->sceneNum) + "_" +
                               std::to_string((s8)gPlayState->roomCtx.curRoom.num);
         pendingRoomKills[roomKey].insert(GetActorKey(actor, gPlayState->sceneNum));
+
+        // Authority already present → flush immediately so it kills the actor now.
+        if (IsOwnerInSameRoom()) {
+            SendPacket_RoomKillSync();
+        }
     });
 
     // Both sides: when a dropped collectible is picked up, remove the matching
@@ -816,8 +867,52 @@ void Anchor::RegisterHooks() {
                 lastDayTimeClient = gSaveContext.dayTime;
             }
         }
+    });  // end time-sync OnGameFrameUpdate
+    // #endregion
+
+    // #region Physical Item Exchange
+    // Inject the "Du hast von [Name] das Item [Name] erhalten!" text into
+    // the reserved text ID that GiveItemEntryWithoutActor uses for
+    // physical-exchange items.
+    COND_ID_HOOK(OnOpenText, PHYSICAL_EXCHANGE_TEXT_ID, isConnected,
+                 [&](uint16_t* textId, bool* loadFromMessageTable) {
+        if (!roomState.physicalItemExchange || physicalExchangeCurrentMsg.empty()) return;
+        CustomMessage msg(physicalExchangeCurrentMsg, physicalExchangeCurrentMsg,
+                          physicalExchangeCurrentMsg, TEXTBOX_TYPE_BLUE);
+        msg.LoadIntoFont();
+        *loadFromMessageTable = false;
+    });
+
+    // Check proximity every frame: when a remote player is within
+    // PHYSICAL_EXCHANGE_DIST_SQ of the local player, pop one item from
+    // the queue and also flush all buffered flags.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!roomState.physicalItemExchange) return;
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (physicalItemQueue.empty() && physicalFlagQueue.empty()) return;
+
+        Player* player = GET_PLAYER(gPlayState);
+        bool anyPlayerClose = false;
+        for (auto& [clientId, client] : clients) {
+            if (client.self || !client.online || !client.player) continue;
+            f32 distSq = Math3D_Vec3fDistSq(&player->actor.world.pos,
+                                             &client.player->actor.world.pos);
+            if (distSq <= PHYSICAL_EXCHANGE_DIST_SQ) {
+                anyPlayerClose = true;
+                break;
+            }
+        }
+        if (!anyPlayerClose) return;
+
+        if (!physicalItemQueue.empty()) {
+            GiveNextPhysicalExchangeItem();
+        }
+        // Flags are applied all at once as soon as a player is close.
+        if (!physicalFlagQueue.empty()) {
+            FlushPhysicalFlagQueue();
+        }
     });
     // #endregion
 
-    // #endregion
+    // #endregion  // end RegisterHooks
 }

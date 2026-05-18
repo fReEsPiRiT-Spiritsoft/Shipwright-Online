@@ -26,13 +26,21 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["syncItemsAndFlags"] = 0;
         payload["syncHPAndCounts"] = 0;
         payload["syncDayTime"] = 0;
+        payload["syncEnemies"] = 0;
+        payload["syncRadius"] = 0;
+        payload["enemySyncTickRate"] = 2;
+        payload["physicalItemExchange"] = 0;
     } else {
         payload["pvpMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PvpMode"), 1);
         payload["showLocationsMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.ShowLocationsMode"), 1);
         payload["teleportMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.TeleportMode"), 1);
         payload["syncItemsAndFlags"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncItemsAndFlags"), 1);
         payload["syncHPAndCounts"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncHPAndCounts"), 1);
-        payload["syncDayTime"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"), 0);
+        payload["syncDayTime"]        = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"), 0);
+        payload["syncEnemies"]           = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"), 0);
+        payload["syncRadius"]            = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncRadius"), 1500);
+        payload["enemySyncTickRate"]     = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.EnemySyncTickRate"), 2);
+        payload["physicalItemExchange"]  = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PhysicalItemExchange"), 0);
     }
 
     return payload;
@@ -56,7 +64,11 @@ void Anchor::HandlePacket_UpdateRoomState(nlohmann::json payload) {
     roomState.showLocationsMode = payload["state"]["showLocationsMode"].get<u8>();
     roomState.teleportMode = payload["state"]["teleportMode"].get<u8>();
     roomState.syncItemsAndFlags = payload["state"]["syncItemsAndFlags"].get<u8>();
-    // syncHPAndCounts and syncDayTime are optional for backwards compatibility
-    roomState.syncHPAndCounts = payload["state"].value("syncHPAndCounts", (u8)1);
-    roomState.syncDayTime = payload["state"].value("syncDayTime", (u8)0);
+    // optional fields for backwards compatibility
+    roomState.syncHPAndCounts    = payload["state"].value("syncHPAndCounts",   (u8)1);
+    roomState.syncDayTime        = payload["state"].value("syncDayTime",       (u8)0);
+    roomState.syncEnemies           = payload["state"].value("syncEnemies",           (u8)0);
+    roomState.syncRadius            = payload["state"].value("syncRadius",            (uint16_t)1500);
+    roomState.enemySyncTickRate     = payload["state"].value("enemySyncTickRate",     (u8)2);
+    roomState.physicalItemExchange  = payload["state"].value("physicalItemExchange",  (u8)0);
 }
