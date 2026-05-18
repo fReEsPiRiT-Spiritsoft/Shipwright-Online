@@ -1,5 +1,8 @@
 > 🇩🇪 [Deutsche Version / German version](README_DE.md)
 
+<img width="1756" height="592" alt="soH logo" src="https://github.com/user-attachments/assets/c4e2d146-0f84-4cb8-aff2-dcfc9d52bd06" />
+
+
 I am trying to make a server/client version of SoH to fully synchronize the co-op game experience.
 
 # Features Added (Host-Authority Co-op Prototype)
@@ -24,7 +27,7 @@ This fork implements a Host-Authority Multiplayer Architecture designed for enem
 * **Global Time-Lock Feature:** Checks `sceneNum` for both players. If either the host or the client enters an area where time naturally stops (e.g., Kakariko Village, Market, Dungeons), the time counter freezes globally for both players, even if the other player is currently in Hyrule Field.
 
 
-<img width="1756" height="592" alt="soH logo" src="https://github.com/user-attachments/assets/c4e2d146-0f84-4cb8-aff2-dcfc9d52bd06" />
+
 
 
 ## Website
