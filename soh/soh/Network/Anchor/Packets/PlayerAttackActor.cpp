@@ -69,14 +69,17 @@ void Anchor::HandlePacket_PlayerAttackActor(nlohmann::json payload) {
             if (actor->colChkInfo.health > 0 &&
                 GetActorKey(actor, gPlayState->sceneNum) == actorKey)
             {
-                // Set damage so Actor_ApplyDamage() reads the correct value,
-                // then immediately apply it and clear the field so the actor's
-                // own update() does not double-apply it next frame.
+                // Apply damage directly — acHit is never set for remote hits
+                // (no real collision on the host), so the enemy's own update()
+                // would silently ignore queued damage.  We call Actor_ApplyDamage
+                // immediately and, if lethal, Actor_Kill so OnActorKill fires and
+                // SendPacket_ActorKilled propagates the kill to all clients.
                 actor->colChkInfo.damage = damage;
                 Actor_ApplyDamage(actor);
                 actor->colChkInfo.damage = 0;
-                // Let the enemy's own update() detect health == 0 next frame so the
-                // death animation plays and items drop before Actor_Kill is called.
+                if (actor->colChkInfo.health == 0) {
+                    Actor_Kill(actor);
+                }
                 return;
             }
             actor = actor->next;

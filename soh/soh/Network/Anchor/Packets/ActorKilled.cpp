@@ -51,10 +51,11 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
             Actor* next = actor->next; // cache next before potential Actor_Kill invalidates pointers
             if (GetActorKey(actor, sceneNum) == actorKey) {
                 if (actor->colChkInfo.health > 0) {
-                    // Set HP to 0 so the enemy's own update() detects death next frame,
-                    // plays the death animation, drops items, then calls Actor_Kill itself.
-                    // Do NOT call Actor_Kill here — that would skip the death sequence.
+                    // Kill directly: without acHit being set (no real collision
+                    // on the client), the enemy's update() never reaches its
+                    // health==0 death check, so setting HP alone is not enough.
                     actor->colChkInfo.health = 0;
+                    Actor_Kill(actor);
                 }
                 return;
             }
