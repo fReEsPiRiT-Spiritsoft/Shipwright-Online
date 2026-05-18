@@ -768,5 +768,56 @@ void Anchor::RegisterHooks() {
         lastClientInSameRoom = clientNow;
     });
 
+    // #region Time sync
+    // HOST: freeze dayTime when either player is in a timeless scene and broadcast to clients.
+    // CLIENT: accept dayTime from host and suppress local advancement when frozen.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsSaveLoaded() || !roomState.syncDayTime) return;
+
+        // A timeless scene has gTimeIncrement == 0 (set by the engine for all
+        // dungeons, indoor areas, villages, etc.).
+        bool localTimeless  = (gTimeIncrement == 0);
+        bool remoteTimeless = false;
+        for (auto& [clientId, client] : clients) {
+            if (!client.self && client.online && client.isSaveLoaded && client.timeIncrement == 0) {
+                remoteTimeless = true;
+                break;
+            }
+        }
+        bool shouldFreeze = localTimeless || remoteTimeless;
+
+        if (IsEnemyAuthority()) {
+            // HOST -------------------------------------------------------
+            // Environment_Update() already ran this frame (OnGameFrameUpdate
+            // fires after Play_Update).  If time should be frozen, restore
+            // dayTime to what it was at the END of the previous frame.
+            static u16 lastDayTimeHost = 0;
+            if (shouldFreeze) {
+                gSaveContext.dayTime = lastDayTimeHost;
+            } else {
+                lastDayTimeHost = gSaveContext.dayTime;
+            }
+
+            // Broadcast to all clients every ~3 seconds (60 frames).
+            static int timeSyncTimer = 0;
+            if (++timeSyncTimer >= 60) {
+                timeSyncTimer = 0;
+                SendPacket_TimeSync();
+            }
+        } else {
+            // CLIENT -----------------------------------------------------
+            // The host's TIME_SYNC packet sets remoteTimeFrozen and overwrites
+            // dayTime.  Between syncs we also suppress local advancement so
+            // there is no drift while the host has time frozen.
+            static u16 lastDayTimeClient = 0;
+            if (remoteTimeFrozen) {
+                gSaveContext.dayTime = lastDayTimeClient;
+            } else {
+                lastDayTimeClient = gSaveContext.dayTime;
+            }
+        }
+    });
+    // #endregion
+
     // #endregion
 }

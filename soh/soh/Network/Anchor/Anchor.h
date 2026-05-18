@@ -33,6 +33,7 @@ typedef struct {
     s16 sceneNum;
     s8 curRoomNum;
     s32 entranceIndex;
+    u16 timeIncrement; // 0 = timeless scene (dungeon/indoor), >0 = outdoor
 
     // Only available in PLAYER_UPDATE packets
     s32 linkAge;
@@ -69,6 +70,7 @@ typedef struct {
     u8 teleportMode;      // 0 = off, 1 = team, 2 = all
     u8 syncItemsAndFlags; // 0 = off, 1 = on
     u8 syncHPAndCounts;   // 0 = per-player (HP & ammo counts separate), 1 = shared (default)
+    u8 syncDayTime;       // 0 = off, 1 = on
 } RoomState;
 
 class Anchor : public Network {
@@ -108,6 +110,11 @@ class Anchor : public Network {
     // so the resulting OnActorKill does not echo an ITEM_PICKUP back to the sender.
     bool isRemovingRemoteItem = false;
 
+    // Client-side: true when the host's TIME_SYNC packet signals that time is frozen
+    // (either player is in a timeless scene).  Client uses this to suppress local dayTime
+    // advancement between sync packets.
+    bool remoteTimeFrozen = false;
+
     nlohmann::json PrepClientState();
     nlohmann::json PrepRoomState();
     void RegisterHooks();
@@ -117,6 +124,7 @@ class Anchor : public Network {
     static std::string GetActorKey(const Actor* actor, s16 sceneNum);
 
     void HandlePacket_ItemPickup(nlohmann::json payload);
+    void HandlePacket_TimeSync(nlohmann::json payload);
     void HandlePacket_AllClientState(nlohmann::json payload);
     void HandlePacket_ActorKilled(nlohmann::json payload);
     void HandlePacket_ActorStateUpdate(nlohmann::json payload);
@@ -151,6 +159,7 @@ class Anchor : public Network {
 
     // Packet types //
     inline static const std::string ITEM_PICKUP = "ITEM_PICKUP";
+    inline static const std::string TIME_SYNC = "TIME_SYNC";
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
     inline static const std::string ACTOR_KILLED = "ACTOR_KILLED";
     inline static const std::string ACTOR_STATE_UPDATE = "ACTOR_STATE_UPDATE";
@@ -198,6 +207,7 @@ class Anchor : public Network {
     uint32_t GetDummyPlayerClientId(const Actor* actor);
 
     void SendPacket_ItemPickup(const Actor* actor);
+    void SendPacket_TimeSync();
     void SendPacket_ClearTeamState(std::string teamId);
     void SendPacket_ActorKilled(const Actor* actor);
     void SendPacket_ActorStateUpdate(const Actor* actor);

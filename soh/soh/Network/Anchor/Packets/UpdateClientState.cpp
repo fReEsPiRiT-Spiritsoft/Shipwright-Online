@@ -35,6 +35,7 @@ nlohmann::json Anchor::PrepClientState() {
         payload["sceneNum"] = gPlayState->sceneNum;
         payload["curRoomNum"] = gPlayState->roomCtx.curRoom.num;
         payload["entranceIndex"] = gSaveContext.entranceIndex;
+        payload["timeIncrement"] = (u16)gTimeIncrement;
     } else {
         payload["seed"] = 0;
         payload["isSaveLoaded"] = false;
@@ -72,5 +73,6 @@ void Anchor::HandlePacket_UpdateClientState(nlohmann::json payload) {
         clients[clientId].sceneNum = client.sceneNum;
         clients[clientId].curRoomNum = client.curRoomNum;
         clients[clientId].entranceIndex = client.entranceIndex;
+        clients[clientId].timeIncrement = client.timeIncrement;
     }
 }

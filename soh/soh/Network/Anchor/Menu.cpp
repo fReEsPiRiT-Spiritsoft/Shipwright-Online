@@ -222,6 +222,16 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                              "of this setting."))) {
         anchor->SendPacket_UpdateRoomState();
     }
+    if (UIWidgets::CVarCheckbox("Sync Day/Night Cycle", CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(false)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("When enabled, the host broadcasts the current time of day to all "
+                                             "clients every 3 seconds.\n\n"
+                                             "If either player is in an indoor scene or dungeon (where time "
+                                             "normally stands still), time is frozen globally for both players."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
 }
 
 void AnchorInstructionsMenu(WidgetInfo& info) {

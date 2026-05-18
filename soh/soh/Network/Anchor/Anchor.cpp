@@ -133,6 +133,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_ActorKilled(payload);
             else if (packetType == ITEM_PICKUP)
                 HandlePacket_ItemPickup(payload);
+            else if (packetType == TIME_SYNC)
+                HandlePacket_TimeSync(payload);
             else if (packetType == ACTOR_STATE_UPDATE)
                 HandlePacket_ActorStateUpdate(payload);
             else if (packetType == ENEMY_POSITION_UPDATE)

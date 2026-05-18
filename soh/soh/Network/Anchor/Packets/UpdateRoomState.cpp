@@ -25,12 +25,14 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["teleportMode"] = 0;
         payload["syncItemsAndFlags"] = 0;
         payload["syncHPAndCounts"] = 0;
+        payload["syncDayTime"] = 0;
     } else {
         payload["pvpMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PvpMode"), 1);
         payload["showLocationsMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.ShowLocationsMode"), 1);
         payload["teleportMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.TeleportMode"), 1);
         payload["syncItemsAndFlags"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncItemsAndFlags"), 1);
         payload["syncHPAndCounts"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncHPAndCounts"), 1);
+        payload["syncDayTime"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"), 0);
     }
 
     return payload;
@@ -54,6 +56,7 @@ void Anchor::HandlePacket_UpdateRoomState(nlohmann::json payload) {
     roomState.showLocationsMode = payload["state"]["showLocationsMode"].get<u8>();
     roomState.teleportMode = payload["state"]["teleportMode"].get<u8>();
     roomState.syncItemsAndFlags = payload["state"]["syncItemsAndFlags"].get<u8>();
-    // syncHPAndCounts is optional for backwards compatibility with older clients
+    // syncHPAndCounts and syncDayTime are optional for backwards compatibility
     roomState.syncHPAndCounts = payload["state"].value("syncHPAndCounts", (u8)1);
+    roomState.syncDayTime = payload["state"].value("syncDayTime", (u8)0);
 }
