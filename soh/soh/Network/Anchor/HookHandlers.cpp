@@ -545,4 +545,85 @@ void Anchor::RegisterHooks() {
     });
 
     // #endregion
+
+    // #region Enemy Authority - sync enemy health and deaths to all clients
+
+    // Clear tracked health maps whenever the scene changes so stale keys don't accumulate.
+    COND_HOOK(OnSceneInit, isConnected, [&](s16 sceneNum) {
+        trackedEnemyHealth.clear();
+        trackedNonAuthEnemyHealth.clear();
+        pendingRemoteHealthOverride.clear();
+    });
+
+    // Non-authority: intercept damage BEFORE the actor processes it.
+    // Zeroing colChkInfo.damage prevents the enemy's own update() from applying the
+    // damage locally, which in turn prevents local HP reduction, local death states,
+    // and local Actor_Kill() calls.  The raw damage value is forwarded to the authority
+    // so it can apply the canonical hit and re-broadcast the result to all clients.
+    COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        if (actor->colChkInfo.damage == 0) return; // no hit this frame
+
+        u8 damage = actor->colChkInfo.damage;
+        actor->colChkInfo.damage = 0; // Prevent local HP reduction and death state
+        SendPacket_PlayerAttackActor(actor, damage);
+    });
+
+    // Authority: broadcast enemy HP + position changes every time an enemy actor updates.
+    // Only fires for ENEMY and BOSS category actors; only sends a packet when HP actually changed.
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        if (actor->colChkInfo.health == 0) return; // death will be handled by OnActorKill
+
+        std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        u8 currentHealth = actor->colChkInfo.health;
+
+        auto it = trackedEnemyHealth.find(key);
+        if (it != trackedEnemyHealth.end() && it->second != currentHealth) {
+            // Health changed since last frame - broadcast new HP + current position
+            SendPacket_ActorStateUpdate(actor);
+        }
+        trackedEnemyHealth[key] = currentHealth;
+    });
+
+    // Non-authority: keep tracking remote HP overrides so we don't echo them back.
+    // Local player hits are now intercepted in OnBeforeActorUpdate above; this hook
+    // only needs to clear confirmed remote overrides and keep the tracking map current.
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+
+        std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        u8 currentHealth = actor->colChkInfo.health;
+
+        // Clear a confirmed remote override so it doesn't linger.
+        auto remoteIt = pendingRemoteHealthOverride.find(key);
+        if (remoteIt != pendingRemoteHealthOverride.end() && remoteIt->second == currentHealth) {
+            pendingRemoteHealthOverride.erase(remoteIt);
+        }
+
+        trackedNonAuthEnemyHealth[key] = currentHealth;
+    });
+
+    // Authority: broadcast enemy deaths so all clients can kill their local copy.
+    COND_HOOK(OnActorKill, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+
+        std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        trackedEnemyHealth.erase(key);
+        SendPacket_ActorKilled(actor);
+    });
+
+    // #endregion
 }

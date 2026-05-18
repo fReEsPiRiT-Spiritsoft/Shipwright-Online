@@ -2686,6 +2686,7 @@ void Actor_UpdateAll(PlayState* play, ActorContext* actorCtx) {
                         actor->colorFilterTimer--;
                     }
                     if (GameInteractor_ShouldActorUpdate(actor)) {
+                        GameInteractor_ExecuteOnBeforeActorUpdate(actor);
                         actor->update(actor, play);
                         GameInteractor_ExecuteOnActorUpdate(actor);
                     }

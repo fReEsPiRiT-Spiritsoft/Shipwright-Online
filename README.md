@@ -1,3 +1,13 @@
+I am trying to make a server/client version of SoH to fully synchronize the co-op game experience.
+
+Feature Complete:
+
+    The kill state of any enemy is now synchronized for all players!
+
+To-Do:
+
+    Implement animation and position synchronization.
+
 ![Ship of Harkinian](docs/shiptitle.darkmode.png#gh-dark-mode-only)
 ![Ship of Harkinian](docs/shiptitle.lightmode.png#gh-light-mode-only)
 

@@ -37,6 +37,7 @@ DEFINE_HOOK(ShouldActorInit, (void* actor, bool* result));
 DEFINE_HOOK(OnActorInit, (void* actor));
 DEFINE_HOOK(OnActorSpawn, (void* actor));
 DEFINE_HOOK(ShouldActorUpdate, (void* actor, bool* result));
+DEFINE_HOOK(OnBeforeActorUpdate, (void* actor));
 DEFINE_HOOK(OnActorUpdate, (void* actor));
 DEFINE_HOOK(OnActorKill, (void* actor));
 DEFINE_HOOK(OnActorDestroy, (void* actor));

@@ -4,6 +4,8 @@
 
 #include "soh/Network/Network.h"
 #include <libultraship/libultraship.h>
+#include <unordered_map>
+#include <map>
 #include <queue>
 #include <mutex>
 
@@ -66,6 +68,7 @@ typedef struct {
     u8 showLocationsMode; // 0 = none, 1 = team, 2 = all
     u8 teleportMode;      // 0 = off, 1 = team, 2 = all
     u8 syncItemsAndFlags; // 0 = off, 1 = on
+    u8 syncHPAndCounts;   // 0 = per-player (HP & ammo counts separate), 1 = shared (default)
 } RoomState;
 
 class Anchor : public Network {
@@ -80,13 +83,31 @@ class Anchor : public Network {
     std::queue<nlohmann::json> outgoingPacketQueue;
     std::mutex outgoingPacketQueueMutex;
 
+    // Enemy authority: tracks last-known HP of each enemy actor so we only
+    // broadcast ActorStateUpdate when health actually changes.
+    // Key: actorKey string (see GetActorKey). Cleared on scene change.
+    std::unordered_map<std::string, u8> trackedEnemyHealth;
+
+    // Non-authority: tracks last-known HP so local hits can be forwarded to the owner.
+    std::unordered_map<std::string, u8> trackedNonAuthEnemyHealth;
+
+    // Non-authority: records actor health values set via incoming ActorStateUpdate packets.
+    // Used to distinguish remote-driven health changes from local player hits.
+    // Entry is erased after one confirmed observation in OnActorUpdate.
+    std::unordered_map<std::string, u8> pendingRemoteHealthOverride;
+
     nlohmann::json PrepClientState();
     nlohmann::json PrepRoomState();
     void RegisterHooks();
     void RefreshClientActors();
     void SetDummyPlayerClientId(const Actor* actor, uint32_t clientId);
 
+    static std::string GetActorKey(const Actor* actor, s16 sceneNum);
+
     void HandlePacket_AllClientState(nlohmann::json payload);
+    void HandlePacket_ActorKilled(nlohmann::json payload);
+    void HandlePacket_ActorStateUpdate(nlohmann::json payload);
+    void HandlePacket_PlayerAttackActor(nlohmann::json payload);
     void HandlePacket_ConsumeAdultTradeItem(nlohmann::json payload);
     void HandlePacket_DamagePlayer(nlohmann::json payload);
     void HandlePacket_DisableAnchor(nlohmann::json payload);
@@ -115,6 +136,9 @@ class Anchor : public Network {
 
     // Packet types //
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
+    inline static const std::string ACTOR_KILLED = "ACTOR_KILLED";
+    inline static const std::string ACTOR_STATE_UPDATE = "ACTOR_STATE_UPDATE";
+    inline static const std::string PLAYER_ATTACK_ACTOR = "PLAYER_ATTACK_ACTOR";
     inline static const std::string DAMAGE_PLAYER = "DAMAGE_PLAYER";
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
     inline static const std::string ENTRANCE_DISCOVERED = "ENTRANCE_DISCOVERED";
@@ -152,9 +176,13 @@ class Anchor : public Network {
     void SendJsonToRemote(nlohmann::json packet);
     bool IsSaveLoaded();
     bool CanTeleportTo(uint32_t clientId);
+    bool IsEnemyAuthority();
     uint32_t GetDummyPlayerClientId(const Actor* actor);
 
     void SendPacket_ClearTeamState(std::string teamId);
+    void SendPacket_ActorKilled(const Actor* actor);
+    void SendPacket_ActorStateUpdate(const Actor* actor);
+    void SendPacket_PlayerAttackActor(const Actor* actor, u8 damage);
     void SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage);
     void SendPacket_EntranceDiscovered(u16 entranceIndex);
     void SendPacket_GameComplete();

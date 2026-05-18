@@ -129,6 +129,12 @@ void Anchor::ProcessIncomingPacketQueue() {
             // packetType here is a string so we can't use a switch statement
             if (packetType == ALL_CLIENT_STATE)
                 HandlePacket_AllClientState(payload);
+            else if (packetType == ACTOR_KILLED)
+                HandlePacket_ActorKilled(payload);
+            else if (packetType == ACTOR_STATE_UPDATE)
+                HandlePacket_ActorStateUpdate(payload);
+            else if (packetType == PLAYER_ATTACK_ACTOR)
+                HandlePacket_PlayerAttackActor(payload);
             else if (packetType == DAMAGE_PLAYER)
                 HandlePacket_DamagePlayer(payload);
             else if (packetType == DISABLE_ANCHOR)
@@ -141,6 +147,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_GiveItem(payload);
             else if (packetType == OCARINA_SFX)
                 HandlePacket_OcarinaSfx(payload);
+            else if (packetType == PLAYER_ATTACK_ACTOR)
+                HandlePacket_PlayerAttackActor(payload);
             else if (packetType == PLAYER_UPDATE)
                 HandlePacket_PlayerUpdate(payload);
             else if (packetType == PLAYER_SFX)

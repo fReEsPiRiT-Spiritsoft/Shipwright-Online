@@ -133,7 +133,11 @@ void Anchor::HandlePacket_UpdateTeamState(nlohmann::json payload) {
     if (payload.contains("state")) {
         SaveContext loadedData = payload["state"].get<SaveContext>();
 
-        gSaveContext.healthCapacity = loadedData.healthCapacity;
+        // When HP & Item Count sync is disabled, each player keeps their own health capacity.
+        // Heart containers / pieces that someone collects won't affect other players' max HP.
+        if (roomState.syncHPAndCounts) {
+            gSaveContext.healthCapacity = loadedData.healthCapacity;
+        }
         gSaveContext.magicLevel = loadedData.magicLevel;
         gSaveContext.magicCapacity = gSaveContext.magic = loadedData.magicCapacity;
         gSaveContext.isMagicAcquired = loadedData.isMagicAcquired;
@@ -208,10 +212,17 @@ void Anchor::HandlePacket_UpdateTeamState(nlohmann::json payload) {
             }
         }
 
-        // Restore ammo if it's non-zero, unless it's beans
-        for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.ammo); i++) {
-            if (gSaveContext.inventory.ammo[i] != 0 && i != SLOT(ITEM_BEAN) && i != SLOT(ITEM_BEAN + 1)) {
+        if (!roomState.syncHPAndCounts) {
+            // Per-player mode: keep all local ammo counts (arrows, bombs, nuts, etc. are per-player)
+            for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.ammo); i++) {
                 loadedData.inventory.ammo[i] = gSaveContext.inventory.ammo[i];
+            }
+        } else {
+            // Shared mode: restore ammo if it's non-zero, unless it's beans
+            for (int i = 0; i < ARRAY_COUNT(gSaveContext.inventory.ammo); i++) {
+                if (gSaveContext.inventory.ammo[i] != 0 && i != SLOT(ITEM_BEAN) && i != SLOT(ITEM_BEAN + 1)) {
+                    loadedData.inventory.ammo[i] = gSaveContext.inventory.ammo[i];
+                }
             }
         }
 

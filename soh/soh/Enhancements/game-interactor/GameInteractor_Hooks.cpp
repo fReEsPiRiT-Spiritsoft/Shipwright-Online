@@ -162,6 +162,13 @@ bool GameInteractor_ShouldActorUpdate(void* actor) {
     return result;
 }
 
+void GameInteractor_ExecuteOnBeforeActorUpdate(void* actor) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnBeforeActorUpdate>(actor);
+    GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnBeforeActorUpdate>(((Actor*)actor)->id, actor);
+    GameInteractor::Instance->ExecuteHooksForPtr<GameInteractor::OnBeforeActorUpdate>((uintptr_t)actor, actor);
+    GameInteractor::Instance->ExecuteHooksForFilter<GameInteractor::OnBeforeActorUpdate>(actor);
+}
+
 void GameInteractor_ExecuteOnActorUpdate(void* actor) {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorUpdate>(actor);
     GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnActorUpdate>(((Actor*)actor)->id, actor);

@@ -211,6 +211,17 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                 UIWidgets::CheckboxOptions().DefaultValue(true).Color(THEME_COLOR))) {
         anchor->SendPacket_UpdateRoomState();
     }
+    if (UIWidgets::CVarCheckbox("Sync HP & Item Counts", CVAR_REMOTE_ANCHOR("RoomSettings.SyncHPAndCounts"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(true)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("When disabled, each player has their own HP and consumable item "
+                                             "counts (arrows, bombs, nuts, etc.).\n\n"
+                                             "Item unlocks (Hookshot, Bow, Hammer, ...) and story items "
+                                             "(medallions, gauntlets, tunics, ...) are always shared regardless "
+                                             "of this setting."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
 }
 
 void AnchorInstructionsMenu(WidgetInfo& info) {

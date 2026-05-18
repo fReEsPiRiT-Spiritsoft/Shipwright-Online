@@ -15,7 +15,7 @@ void func_80838280(Player* player);
  */
 
 void Anchor::SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage) {
-    if (!IsSaveLoaded()) {
+    if (!IsSaveLoaded() || !roomState.syncHPAndCounts) {
         return;
     }
 
@@ -29,6 +29,10 @@ void Anchor::SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage) {
 }
 
 void Anchor::HandlePacket_DamagePlayer(nlohmann::json payload) {
+    if (!roomState.syncHPAndCounts) {
+        return;
+    }
+
     uint32_t clientId = payload.at("clientId").get<uint32_t>();
     if (!clients.contains(clientId) || clients[clientId].player == nullptr) {
         return;

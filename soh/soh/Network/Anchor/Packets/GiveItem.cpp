@@ -19,6 +19,31 @@ extern PlayState* gPlayState;
 
 uint8_t incomingIceTrapsFromAnchor = 0;
 
+/**
+ * Returns true if the item is a consumable (HP refill, ammo refill, rupees, etc.)
+ * that should NOT be synced to other players when syncHPAndCounts is disabled.
+ *
+ * Items with category ITEM_CATEGORY_MAJOR (story items, equipment unlocks, songs, medals...)
+ * are always synced regardless of this setting.
+ *
+ * Rules:
+ *   ITEM_CATEGORY_JUNK    → per-player (junk doesn't matter)
+ *   ITEM_CATEGORY_LESSER  → per-player (ammo refills, rupees, etc.)
+ *   ITEM_CATEGORY_HEALTH  → per-player (hearts, heart pieces, heart containers)
+ *   ITEM_CATEGORY_MAJOR   → always sync
+ *   ITEM_CATEGORY_BOSS_KEY / ITEM_CATEGORY_SMALL_KEY / ITEM_CATEGORY_SKULLTULA_TOKEN → always sync
+ */
+static bool IsConsumableCountItem(const GetItemEntry& entry) {
+    switch (entry.getItemCategory) {
+        case ITEM_CATEGORY_JUNK:
+        case ITEM_CATEGORY_LESSER:
+        case ITEM_CATEGORY_HEALTH:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void Anchor::SendPacket_GiveItem(u16 modId, s16 getItemId) {
     if (!IsSaveLoaded() || isProcessingIncomingPacket || !roomState.syncItemsAndFlags) {
         return;
@@ -32,6 +57,20 @@ void Anchor::SendPacket_GiveItem(u16 modId, s16 getItemId) {
     // Ignore sending master sword in final Ganon fight
     if (modId == MOD_RANDOMIZER && getItemId == RG_MASTER_SWORD && gPlayState->sceneNum == SCENE_GANON_BOSS) {
         return;
+    }
+
+    // When HP & Item Count sync is disabled, only send major (unlock/story) items.
+    // Consumables (ammo refills, hearts, rupees) stay per-player.
+    if (!roomState.syncHPAndCounts) {
+        GetItemEntry entry;
+        if (modId == MOD_NONE) {
+            entry = ItemTableManager::Instance->RetrieveItemEntry(MOD_NONE, getItemId);
+        } else {
+            entry = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(getItemId)).GetGIEntry_Copy();
+        }
+        if (IsConsumableCountItem(entry)) {
+            return;
+        }
     }
 
     nlohmann::json payload;
@@ -59,6 +98,12 @@ void Anchor::HandlePacket_GiveItem(nlohmann::json payload) {
         getItemEntry = ItemTableManager::Instance->RetrieveItemEntry(MOD_NONE, getItemId);
     } else {
         getItemEntry = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(getItemId)).GetGIEntry_Copy();
+    }
+
+    // When HP & Item Count sync is disabled, don't accept consumable items from other players.
+    // This packet shouldn't normally arrive (sender already filters), but guard here for safety.
+    if (!roomState.syncHPAndCounts && IsConsumableCountItem(getItemEntry)) {
+        return;
     }
 
     if (getItemEntry.modIndex == MOD_NONE) {
