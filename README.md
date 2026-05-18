@@ -4,9 +4,9 @@ Feature Complete:
 
     The kill state of any enemy is now synchronized for all players!
 
-To-Do:
-
-    Implement animation and position synchronization.
+ToDo:
+* Fix Client Damage (Send hit events from Client to Host)
+* Animation and Position sync
 
 ![Ship of Harkinian](docs/shiptitle.darkmode.png#gh-dark-mode-only)
 ![Ship of Harkinian](docs/shiptitle.lightmode.png#gh-light-mode-only)
