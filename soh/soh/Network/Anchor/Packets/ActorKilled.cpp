@@ -50,13 +50,12 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
         while (actor != nullptr) {
             Actor* next = actor->next; // cache next before potential Actor_Kill invalidates pointers
             if (GetActorKey(actor, sceneNum) == actorKey) {
-                if (actor->colChkInfo.health > 0) {
-                    // Kill directly: without acHit being set (no real collision
-                    // on the client), the enemy's update() never reaches its
-                    // health==0 death check, so setting HP alone is not enough.
-                    actor->colChkInfo.health = 0;
-                    Actor_Kill(actor);
-                }
+                // Always kill the actor, regardless of its current health value.
+                // EnemyPositionUpdate may have already set health to 0 while
+                // syncing the falling animation; we must still remove the actor
+                // when the authoritative kill signal arrives.
+                actor->colChkInfo.health = 0;
+                Actor_Kill(actor);
                 return;
             }
             actor = next;

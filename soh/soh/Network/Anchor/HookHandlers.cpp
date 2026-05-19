@@ -559,6 +559,7 @@ void Anchor::RegisterHooks() {
         trackedEnemyPos.clear();
         trackedBgActors.clear();
         bgActorKeyframeTarget.clear();
+        recentCollectibleSpawns.clear();
         // Enemies respawn on every room entry, so per-scene kill lists are stale
         // after a scene transition.  Clear to avoid phantom kills on next visit.
         pendingRoomKills.clear();
@@ -666,7 +667,10 @@ void Anchor::RegisterHooks() {
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
-        if (actor->colChkInfo.health == 0) return; // death handled by OnActorKill
+        // NOTE: Do NOT skip health==0 actors here. When a lethal hit sets health to 0,
+        // the enemy runs its native death animation for several frames before Actor_Kill
+        // is called. We must continue broadcasting position during that time so the
+        // client sees the falling animation. OnActorKill sends ActorKilled at the end.
 
         std::string key = GetActorKey(actor, gPlayState->sceneNum);
         u8 currentHealth = actor->colChkInfo.health;
@@ -745,6 +749,16 @@ void Anchor::RegisterHooks() {
     });
 
     // Authority: broadcast enemy deaths so all clients can kill their local copy.
+    // Also track any collectibles that spawned in the same frame via recentCollectibleSpawns.
+    COND_ID_HOOK(OnActorSpawn, ACTOR_EN_ITEM00, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies || !IsAnyClientInSameRoom()) return;
+        if (isSpawningRemoteCollectible) return;
+        Actor* item = (Actor*)actorRef;
+        recentCollectibleSpawns.push_back({item->params, item->world.pos});
+    });
+
+    // Authority: broadcast enemy deaths so all clients can kill their local copy.
     COND_HOOK(OnActorKill, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
         if (!roomState.syncEnemies) return;
@@ -756,6 +770,17 @@ void Anchor::RegisterHooks() {
         trackedEnemyHealth.erase(key);
         trackedEnemyPos.erase(key);
         SendPacket_ActorKilled(actor);
+
+        // Relay any collectibles that dropped from this enemy this frame so the
+        // client can spawn matching EN_ITEM00 actors and compete for the loot.
+        if (IsAnyClientInSameRoom() && !recentCollectibleSpawns.empty()) {
+            constexpr f32 kDropRadiusSq = 300.0f * 300.0f;
+            for (auto& drop : recentCollectibleSpawns) {
+                if (Math3D_Vec3fDistSq(&actor->world.pos, &drop.pos) <= kDropRadiusSq) {
+                    SendPacket_EnemyDropItem(drop.params, drop.pos.x, drop.pos.y, drop.pos.z);
+                }
+            }
+        }
 
         // If no client is in our room, record this kill so it can be
         // re-applied via ROOM_KILL_SYNC when a client enters later.
@@ -1116,6 +1141,11 @@ void Anchor::RegisterHooks() {
         prevCsState = curCsState;
     });
     // #endregion
+
+    // Clear per-frame collectible-spawn tracking used by ENEMY_DROP_ITEM.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        recentCollectibleSpawns.clear();
+    });
 
     // #endregion  // end RegisterHooks
 }

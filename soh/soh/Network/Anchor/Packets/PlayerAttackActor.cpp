@@ -71,15 +71,15 @@ void Anchor::HandlePacket_PlayerAttackActor(nlohmann::json payload) {
             {
                 // Apply damage directly — acHit is never set for remote hits
                 // (no real collision on the host), so the enemy's own update()
-                // would silently ignore queued damage.  We call Actor_ApplyDamage
-                // immediately and, if lethal, Actor_Kill so OnActorKill fires and
-                // SendPacket_ActorKilled propagates the kill to all clients.
+                // would silently ignore queued damage.
+                // Do NOT call Actor_Kill here even when health reaches 0: the actor's
+                // own update() will detect health == 0 on the very next frame and
+                // transition into its native death action (falling animation, sounds,
+                // etc.).  When that sequence completes the actor calls Actor_Kill
+                // itself, firing OnActorKill → SendPacket_ActorKilled to all clients.
                 actor->colChkInfo.damage = damage;
                 Actor_ApplyDamage(actor);
                 actor->colChkInfo.damage = 0;
-                if (actor->colChkInfo.health == 0) {
-                    Actor_Kill(actor);
-                }
                 return;
             }
             actor = actor->next;

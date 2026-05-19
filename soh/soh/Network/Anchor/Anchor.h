@@ -138,6 +138,15 @@ class Anchor : public Network {
     // so the resulting OnActorKill does not echo an ITEM_PICKUP back to the sender.
     bool isRemovingRemoteItem = false;
 
+    // Client-side: set to true while HandlePacket_EnemyDropItem spawns an EN_ITEM00
+    // so the OnActorSpawn hook does not echo the spawned actor back to the authority.
+    bool isSpawningRemoteCollectible = false;
+
+    // Authority-side: collectibles that spawned during the current frame's actor updates.
+    // Populated by OnActorSpawn(EN_ITEM00); consumed and cleared each frame.
+    struct PendingCollectibleSpawn { s16 params; Vec3f pos; };
+    std::vector<PendingCollectibleSpawn> recentCollectibleSpawns;
+
     // Physical Item Exchange: items/flags buffered until players are within proximity.
     struct PendingExchangeItem {
         u16 modId;
@@ -197,6 +206,8 @@ class Anchor : public Network {
     static std::string GetActorKey(const Actor* actor, s16 sceneNum);
 
     void HandlePacket_ItemPickup(nlohmann::json payload);
+    void HandlePacket_EnemyDropItem(nlohmann::json payload);
+    void SendPacket_EnemyDropItem(s16 params, float x, float y, float z);
     void HandlePacket_TimeSync(nlohmann::json payload);
     void HandlePacket_AllClientState(nlohmann::json payload);
     void HandlePacket_ActorKilled(nlohmann::json payload);
@@ -232,6 +243,7 @@ class Anchor : public Network {
 
     // Packet types //
     inline static const std::string ITEM_PICKUP = "ITEM_PICKUP";
+    inline static const std::string ENEMY_DROP_ITEM = "ENEMY_DROP_ITEM";
     inline static const std::string TIME_SYNC = "TIME_SYNC";
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
     inline static const std::string ACTOR_KILLED = "ACTOR_KILLED";
