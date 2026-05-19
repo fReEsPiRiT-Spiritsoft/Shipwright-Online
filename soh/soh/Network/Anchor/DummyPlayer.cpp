@@ -120,9 +120,6 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
     Math_Vec3s_Copy(&player->upperLimbRot, &client.upperLimbRot);
     Math_Vec3s_Copy(&actor->shape.rot, &client.posRot.rot);
     Math_Vec3f_Copy(&actor->world.pos, &client.posRot.pos);
-    player->skelAnime.jointTable = client.jointTable;
-    player->skelAnime.movementFlags = client.movementFlags;
-    Math_Vec3s_Copy(&player->skelAnime.prevTransl, &client.prevTransl);
     player->currentBoots = client.currentBoots;
     player->currentShield = client.currentShield;
     player->currentTunic = client.currentTunic;
@@ -135,26 +132,38 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
     player->unk_85C = client.unk_85C;
     player->av1.actionVar1 = client.actionVar1;
 
-    // Apply animation movement (Copied from Player_ApplyAnimMovementScaledByAge)
-    Vec3f diff;
-    SkelAnime_UpdateTranslation(&player->skelAnime, &diff, player->actor.shape.rot.y);
+    // Giver throw animation override: while active, advance the pre-set throw
+    // animation and skip the network joint table / root motion override so the
+    // dummy holds the throw pose.  Position was already restored from client.posRot.pos.
+    if (client.giverAnimTimer > 0) {
+        client.giverAnimTimer--;
+        LinkAnimation_Update(play, &player->skelAnime);
+    } else {
+        player->skelAnime.jointTable = client.jointTable;
+        player->skelAnime.movementFlags = client.movementFlags;
+        Math_Vec3s_Copy(&player->skelAnime.prevTransl, &client.prevTransl);
 
-    if (player->skelAnime.movementFlags & 1) {
-        if (!LINK_IS_ADULT) {
-            diff.x *= 0.64f;
-            diff.z *= 0.64f;
+        // Apply animation movement (Copied from Player_ApplyAnimMovementScaledByAge)
+        Vec3f diff;
+        SkelAnime_UpdateTranslation(&player->skelAnime, &diff, player->actor.shape.rot.y);
+
+        if (player->skelAnime.movementFlags & 1) {
+            if (!LINK_IS_ADULT) {
+                diff.x *= 0.64f;
+                diff.z *= 0.64f;
+            }
+
+            player->actor.world.pos.x += diff.x * player->actor.scale.x;
+            player->actor.world.pos.z += diff.z * player->actor.scale.z;
         }
 
-        player->actor.world.pos.x += diff.x * player->actor.scale.x;
-        player->actor.world.pos.z += diff.z * player->actor.scale.z;
-    }
+        if (player->skelAnime.movementFlags & 2) {
+            if (!(player->skelAnime.movementFlags & 4)) {
+                diff.y *= player->ageProperties->unk_08;
+            }
 
-    if (player->skelAnime.movementFlags & 2) {
-        if (!(player->skelAnime.movementFlags & 4)) {
-            diff.y *= player->ageProperties->unk_08;
+            player->actor.world.pos.y += diff.y * player->actor.scale.y;
         }
-
-        player->actor.world.pos.y += diff.y * player->actor.scale.y;
     }
 
     if (player->modelGroup != client.modelGroup) {

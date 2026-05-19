@@ -294,6 +294,28 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                              "When OFF: items and flags are applied instantly (default)."))) {
         anchor->SendPacket_UpdateRoomState();
     }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Cutscene Sync");
+
+    // Cutscene Sync requires Enemy Sync to be active (shares its radius/room infrastructure).
+    ImGui::BeginDisabled(!enemySyncOn);
+    if (!enemySyncOn) {
+        UIWidgets::Tooltip("Requires Enemy Sync to be enabled first.");
+    }
+
+    if (UIWidgets::CVarCheckbox("Cutscene Sync (Nearest)", CVAR_REMOTE_ANCHOR("RoomSettings.SyncCutscenes"),
+                                UIWidgets::CheckboxOptions()
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("When ON: in-scene cutscenes are broadcast to nearby players\n"
+                                             "in the same room and within the Enemy Sync Radius.\n\n"
+                                             "Both players will see the same cutscene play in sync.\n"
+                                             "Players outside the radius are not affected.\n\n"
+                                             "Requires Enemy Sync to be enabled."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+
+    ImGui::EndDisabled();
 }
 
 void AnchorInstructionsMenu(WidgetInfo& info) {

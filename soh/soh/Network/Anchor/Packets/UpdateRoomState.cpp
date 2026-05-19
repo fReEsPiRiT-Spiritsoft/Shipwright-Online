@@ -30,6 +30,7 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["syncRadius"] = 0;
         payload["enemySyncTickRate"] = 2;
         payload["physicalItemExchange"] = 0;
+        payload["syncCutscenes"] = 0;
     } else {
         payload["pvpMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PvpMode"), 1);
         payload["showLocationsMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.ShowLocationsMode"), 1);
@@ -41,6 +42,7 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["syncRadius"]            = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncRadius"), 1500);
         payload["enemySyncTickRate"]     = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.EnemySyncTickRate"), 2);
         payload["physicalItemExchange"]  = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PhysicalItemExchange"), 0);
+        payload["syncCutscenes"]         = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncCutscenes"), 0);
     }
 
     return payload;
@@ -71,4 +73,5 @@ void Anchor::HandlePacket_UpdateRoomState(nlohmann::json payload) {
     roomState.syncRadius            = payload["state"].value("syncRadius",            (uint16_t)1500);
     roomState.enemySyncTickRate     = payload["state"].value("enemySyncTickRate",     (u8)2);
     roomState.physicalItemExchange  = payload["state"].value("physicalItemExchange",  (u8)0);
+    roomState.syncCutscenes         = payload["state"].value("syncCutscenes",         (u8)0);
 }

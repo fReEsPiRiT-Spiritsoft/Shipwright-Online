@@ -141,6 +141,10 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_EnemyPositionUpdate(payload);
             else if (packetType == ROOM_KILL_SYNC)
                 HandlePacket_RoomKillSync(payload);
+            else if (packetType == BG_KEYFRAME_SYNC)
+                HandlePacket_BgKeyframeSync(payload);
+            else if (packetType == TRIGGER_CUTSCENE)
+                HandlePacket_TriggerCutscene(payload);
             else if (packetType == PLAYER_ATTACK_ACTOR)
                 HandlePacket_PlayerAttackActor(payload);
             else if (packetType == DAMAGE_PLAYER)

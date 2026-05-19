@@ -3,12 +3,14 @@
 #include "soh/Enhancements/cosmetics/cosmeticsTypes.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/custom-message/CustomMessageManager.h"
+#include "soh/Notification/Notification.h"
 #include "soh/frame_interpolation.h"
 #include "soh/OTRGlobals.h"
 
 extern "C" {
 #include "variables.h"
 #include "functions.h"
+#include "src/overlays/actors/ovl_En_Horse/z_en_horse.h"
 #include "src/overlays/actors/ovl_Bg_Bombwall/z_bg_bombwall.h"
 #include "src/overlays/actors/ovl_Bg_Breakwall/z_bg_breakwall.h"
 #include "src/overlays/actors/ovl_Bg_Haka_Zou/z_bg_haka_zou.h"
@@ -555,9 +557,13 @@ void Anchor::RegisterHooks() {
         trackedNonAuthEnemyHealth.clear();
         pendingRemoteHealthOverride.clear();
         trackedEnemyPos.clear();
+        trackedBgActors.clear();
+        bgActorKeyframeTarget.clear();
         // Enemies respawn on every room entry, so per-scene kill lists are stale
         // after a scene transition.  Clear to avoid phantom kills on next visit.
         pendingRoomKills.clear();
+        // The Epona proxy actor belongs to the unloaded scene — reset state machine.
+        eponaExchange = {};
     });
 
     // Non-authority: intercept damage BEFORE the actor processes it.
@@ -871,18 +877,6 @@ void Anchor::RegisterHooks() {
     // #endregion
 
     // #region Physical Item Exchange
-    // Inject the "Du hast von [Name] das Item [Name] erhalten!" text into
-    // the reserved text ID that GiveItemEntryWithoutActor uses for
-    // physical-exchange items.
-    COND_ID_HOOK(OnOpenText, PHYSICAL_EXCHANGE_TEXT_ID, isConnected,
-                 [&](uint16_t* textId, bool* loadFromMessageTable) {
-        if (!roomState.physicalItemExchange || physicalExchangeCurrentMsg.empty()) return;
-        CustomMessage msg(physicalExchangeCurrentMsg, physicalExchangeCurrentMsg,
-                          physicalExchangeCurrentMsg, TEXTBOX_TYPE_BLUE);
-        msg.LoadIntoFont();
-        *loadFromMessageTable = false;
-    });
-
     // Check proximity every frame: when a remote player is within
     // PHYSICAL_EXCHANGE_DIST_SQ of the local player, pop one item from
     // the queue and also flush all buffered flags.
@@ -911,6 +905,215 @@ void Anchor::RegisterHooks() {
         if (!physicalFlagQueue.empty()) {
             FlushPhysicalFlagQueue();
         }
+    });
+
+    // Epona Mode B: advance proxy actor through the arc and hand over item on arrival.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (eponaExchange.phase == EponaExchangePhase::IDLE) return;
+        if (!IsSaveLoaded() || !gPlayState) return;
+        Player* player = GET_PLAYER(gPlayState);
+
+        if (eponaExchange.phase == EponaExchangePhase::WHINNEYING) {
+            // Wait ~30 frames for the neigh animation, then spawn the proxy.
+            if (gPlayState->state.frames - eponaExchange.frameStart < 30) return;
+
+            // Prefer spawning from the sender's dummy position; fall back to receiver.
+            Vec3f spawnPos = player->actor.world.pos;
+            spawnPos.y += 80.0f;
+            for (auto& [cid, client] : clients) {
+                if (!client.self && client.online && client.player &&
+                    client.name == eponaExchange.item.senderName) {
+                    spawnPos = client.player->actor.world.pos;
+                    spawnPos.y += 80.0f;
+                    break;
+                }
+            }
+
+            Actor* proxy = Actor_Spawn(&gPlayState->actorCtx, gPlayState, ACTOR_EN_ITEM00,
+                                       spawnPos.x, spawnPos.y, spawnPos.z, 0, 0, 0,
+                                       ITEM00_SOH_GIVE_ITEM_ENTRY);
+            if (proxy) {
+                EnItem00* item00 = (EnItem00*)proxy;
+                item00->itemEntry  = eponaExchange.entry; // pre-resolved in StartEponaExchange
+                item00->unk_154    = 999;                 // prevent auto-collect
+                proxy->speedXZ     = 0.0f;
+                proxy->gravity     = 0.0f;
+            }
+            eponaExchange.proxyActor = proxy;
+            eponaExchange.proxyTarget = player->actor.world.pos;
+            eponaExchange.proxyTarget.y += 60.0f;
+            eponaExchange.phase      = EponaExchangePhase::PROXY_FLYING;
+            eponaExchange.frameStart = gPlayState->state.frames;
+
+        } else if (eponaExchange.phase == EponaExchangePhase::PROXY_FLYING) {
+            if (!eponaExchange.proxyActor) {
+                // Proxy was destroyed unexpectedly (scene change etc.) — requeue.
+                physicalItemQueue.push_front(eponaExchange.item);
+                eponaExchange.phase = EponaExchangePhase::IDLE;
+                return;
+            }
+
+            u32   t        = gPlayState->state.frames - eponaExchange.frameStart;
+            float progress = (t < 40) ? (float)t / 40.0f : 1.0f;
+
+            Actor* proxy = eponaExchange.proxyActor;
+            // Track player position in real-time.
+            eponaExchange.proxyTarget = player->actor.world.pos;
+            eponaExchange.proxyTarget.y += 60.0f;
+            Vec3f& tgt = eponaExchange.proxyTarget;
+
+            // Smooth XZ approach.
+            proxy->world.pos.x += (tgt.x - proxy->world.pos.x) * 0.12f;
+            proxy->world.pos.z += (tgt.z - proxy->world.pos.z) * 0.12f;
+            // Parabolic Y arc: lerp toward target + sine-based lift peak at midpoint.
+            float arc = sinf(progress * (float)M_PI) * 80.0f;
+            proxy->world.pos.y += (tgt.y + arc - proxy->world.pos.y) * 0.12f;
+
+            // Arrival: XZ within 20 units or flight time exhausted.
+            float dx = proxy->world.pos.x - player->actor.world.pos.x;
+            float dz = proxy->world.pos.z - player->actor.world.pos.z;
+            if ((dx * dx + dz * dz < 400.0f) || progress >= 1.0f) {
+                // Guard: player must be able to receive the item.
+                // If not ready, keep proxy hovering close and retry next frame.
+                bool playerBusy = (player->stateFlags1 &
+                    (PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_IN_ITEM_CS |
+                     PLAYER_STATE1_IN_CUTSCENE | PLAYER_STATE1_DEAD)) != 0;
+                if (playerBusy) {
+                    // Hover the proxy directly above the player until they're free.
+                    proxy->world.pos.x += (player->actor.world.pos.x - proxy->world.pos.x) * 0.2f;
+                    proxy->world.pos.y += ((player->actor.world.pos.y + 60.0f) - proxy->world.pos.y) * 0.2f;
+                    proxy->world.pos.z += (player->actor.world.pos.z - proxy->world.pos.z) * 0.2f;
+                    return;
+                }
+
+                Actor_Kill(proxy);
+                eponaExchange.proxyActor = nullptr;
+
+                GetItemEntry giveEntry = eponaExchange.entry;
+                GiveItemEntryWithoutActor(gPlayState, giveEntry);
+                Notification::Emit({
+                    .prefix = eponaExchange.item.senderName,
+                    .message = "hat dir übergeben:",
+                    .suffix = eponaExchange.item.itemName,
+                });
+
+                eponaExchange.phase      = EponaExchangePhase::WAITING_DIALOG;
+                eponaExchange.frameStart = gPlayState->state.frames;
+            }
+
+        } else if (eponaExchange.phase == EponaExchangePhase::WAITING_DIALOG) {
+            // Wait for the item CS / textbox to finish, or time out after 300 frames.
+            bool done = !(player->stateFlags1 &
+                (PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_IN_ITEM_CS));
+            u32 elapsed = gPlayState->state.frames - eponaExchange.frameStart;
+            if (done || elapsed > 300) {
+                eponaExchange.phase = EponaExchangePhase::IDLE;
+            }
+        }
+    });
+    // #endregion
+
+    // #region BG Actor Keyframe Sync
+    // Authority: scan all ACTORCAT_BG and ACTORCAT_PROP actors every frame.
+    // Send a keyframe packet when:
+    //   a) The actor has moved and the heartbeat interval has elapsed, OR
+    //   b) The actor's velocity has reversed direction (platform turnaround).
+    // Static actors (zero movement) are skipped automatically.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsEnemyAuthority() || !IsSaveLoaded() || !gPlayState) return;
+        if (!IsAnyClientInSameRoom()) return;
+
+        for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
+            Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+            while (actor != nullptr) {
+                std::string key = GetActorKey(actor, gPlayState->sceneNum);
+                BgKeyframe& kf  = trackedBgActors[key];
+
+                // Squared distance from last tracked position.
+                float dx = actor->world.pos.x - kf.pos.x;
+                float dy = actor->world.pos.y - kf.pos.y;
+                float dz = actor->world.pos.z - kf.pos.z;
+                float distSq = dx*dx + dy*dy + dz*dz;
+
+                if (distSq > BG_POS_CHANGE_THRESHOLD_SQ) {
+                    u32 framesSinceSent = gPlayState->state.frames - kf.frameLastSent;
+
+                    // Velocity direction reversal detection (dot product sign flip).
+                    float dot = actor->velocity.x * kf.vel.x
+                              + actor->velocity.y * kf.vel.y
+                              + actor->velocity.z * kf.vel.z;
+                    float magCur  = fabsf(actor->velocity.x) + fabsf(actor->velocity.y) + fabsf(actor->velocity.z);
+                    float magLast = fabsf(kf.vel.x) + fabsf(kf.vel.y) + fabsf(kf.vel.z);
+                    bool  velReversed = (magCur > 0.001f && magLast > 0.001f && dot < 0.0f);
+
+                    if (velReversed || framesSinceSent >= BG_KEYFRAME_INTERVAL_FRAMES) {
+                        SendPacket_BgKeyframeSync(actor);
+                        kf.frameLastSent = gPlayState->state.frames;
+                    }
+                }
+
+                kf.pos = actor->world.pos;
+                kf.vel = actor->velocity;
+                actor  = actor->next;
+            }
+        }
+    });
+
+    // Client: every frame, blend all tracked BG actors toward their last
+    // received keyframe target using Math_ApproachF for smooth correction.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (IsEnemyAuthority() || !IsSaveLoaded() || !gPlayState) return;
+        if (bgActorKeyframeTarget.empty()) return;
+
+        for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
+            Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+            while (actor != nullptr) {
+                std::string key = GetActorKey(actor, gPlayState->sceneNum);
+                auto it = bgActorKeyframeTarget.find(key);
+                if (it != bgActorKeyframeTarget.end()) {
+                    Vec3f& target = it->second;
+                    Math_ApproachF(&actor->world.pos.x, target.x, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                    Math_ApproachF(&actor->world.pos.y, target.y, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                    Math_ApproachF(&actor->world.pos.z, target.z, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                }
+                actor = actor->next;
+            }
+        }
+    });
+    // #endregion
+
+    // #region Cutscene Sync
+    // Detect when the local player's in-scene cutscene transitions from IDLE to
+    // running. If at least one connected partner is in the same room+scene AND
+    // within the enemy-sync radius, broadcast a TRIGGER_CUTSCENE packet so their
+    // client starts the same cutscene.
+    // Authority: both sides may independently trigger CSes (no authority gate).
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!roomState.syncCutscenes || !roomState.syncEnemies) return;
+        if (!IsSaveLoaded() || !gPlayState) return;
+
+        static u8 prevCsState = CS_STATE_IDLE;
+        u8 curCsState = (u8)gPlayState->csCtx.state;
+
+        if (prevCsState == CS_STATE_IDLE && curCsState != CS_STATE_IDLE) {
+            // Cutscene just started — check whether any partner qualifies.
+            Player* player = GET_PLAYER(gPlayState);
+            for (auto& [clientId, client] : clients) {
+                if (client.self || !client.online || !client.player) continue;
+                if (client.sceneNum != gPlayState->sceneNum) continue;
+
+                // Radius check (0 = infinite / disabled).
+                if (roomState.syncRadius > 0) {
+                    f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+                    if (Math3D_Vec3fDistSq(&player->actor.world.pos,
+                                          &client.player->actor.world.pos) > rSq) continue;
+                }
+                // At least one nearby partner qualifies — send and stop searching.
+                SendPacket_TriggerCutscene(curCsState);
+                break;
+            }
+        }
+        prevCsState = curCsState;
     });
     // #endregion
 

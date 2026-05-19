@@ -62,6 +62,8 @@ typedef struct {
 
     // Ptr to the dummy player
     Player* player;
+    // > 0 while playing the throw animation on the dummy (giver animation override).
+    s32 giverAnimTimer = 0;
 } AnchorClient;
 
 typedef struct {
@@ -76,6 +78,7 @@ typedef struct {
     u16 syncRadius;              // world-unit radius for pos/anim sync; 0 = unlimited
     u8  enemySyncTickRate;       // 0=5Hz(every 4th frame), 1=10Hz(every 2nd), 2=20Hz(every frame)
     u8  physicalItemExchange;    // 0 = instant sync (default), 1 = buffer until players are <100 units apart
+    u8  syncCutscenes;           // 0 = off (default), 1 = sync in-scene cutscenes to nearby players
 } RoomState;
 
 class Anchor : public Network {
@@ -107,6 +110,26 @@ class Anchor : public Network {
     // EnemyPositionUpdate when the enemy has actually moved.
     std::unordered_map<std::string, Vec3f> trackedEnemyPos;
 
+    // BgKeyframeSync: authority send-side tracking per background actor.
+    // Cleared on scene change together with trackedEnemyPos.
+    struct BgKeyframe {
+        Vec3f pos = { 0, 0, 0 };  // position at last sent keyframe
+        Vec3f vel = { 0, 0, 0 };  // velocity at last sent keyframe (direction-reversal detection)
+        u32   frameLastSent = 0;  // gPlayState->state.frames when last packet was sent
+    };
+    std::unordered_map<std::string, BgKeyframe> trackedBgActors;
+
+    // BgKeyframeSync: client receive-side — blended toward in the frame hook.
+    std::unordered_map<std::string, Vec3f> bgActorKeyframeTarget;
+
+    // Heartbeat interval in frames (40 frames ≈ 2 s at 20 Hz).
+    static constexpr u32 BG_KEYFRAME_INTERVAL_FRAMES = 40;
+    // Minimum squared position change to count as "moving" (≈ 0.5 world units per frame).
+    static constexpr f32 BG_POS_CHANGE_THRESHOLD_SQ  = 0.25f;
+    // Client-side blend: fraction of gap closed per frame + absolute max step.
+    static constexpr f32 BG_LERP_FRACTION             = 0.15f;
+    static constexpr f32 BG_LERP_MAX_STEP             = 6.0f;
+
     // Both sides: keyed by "sceneNum_roomNum" → set of actorKeys.  Flushed as a ROOM_KILL_SYNC
     // packet the moment the other player enters the room.
     std::map<std::string, std::set<std::string>> pendingRoomKills;
@@ -129,14 +152,29 @@ class Anchor : public Network {
     };
     std::deque<PendingExchangeItem> physicalItemQueue;
     std::deque<PendingExchangeFlag> physicalFlagQueue;
-    // Set before calling GiveItemEntryWithoutActor so the OnOpenText hook can
-    // inject the correct "Du hast von [Name] das Item [Name] erhalten!" text.
-    std::string physicalExchangeCurrentMsg;
+    // How many physical-exchange items are currently in the get-item animation.
+    // Used to suppress the outgoing SendPacket_GiveItem echo when Item_Give fires.
+    int physicalExchangeGivePending = 0;
 
-    // Reserved text ID for physical exchange messages (not used by vanilla OoT).
-    static constexpr uint16_t PHYSICAL_EXCHANGE_TEXT_ID = 0x9099;
     // Proximity threshold: ~100 world units ≈ 1 OoT meter.
     static constexpr float    PHYSICAL_EXCHANGE_DIST_SQ = 100.0f * 100.0f;
+
+    // Epona Mode B exchange state machine ────────────────────────────────────
+    enum class EponaExchangePhase {
+        IDLE,
+        WHINNEYING,    // horse is neighing (~30 frames before spawning proxy)
+        PROXY_FLYING,  // En_Item00 proxy in flight toward receiver
+        WAITING_DIALOG // item has been given; waiting for item-CS to end
+    };
+    struct EponaExchangeState {
+        EponaExchangePhase  phase      = EponaExchangePhase::IDLE;
+        Actor*              proxyActor = nullptr;
+        Vec3f               proxyTarget = {};
+        u32                 frameStart  = 0;
+        PendingExchangeItem item;          // pending exchange item info
+        GetItemEntry        entry;         // pre-resolved; set in StartEponaExchange()
+    };
+    EponaExchangeState eponaExchange;
 
     // Client-side: true when the host's TIME_SYNC packet signals that time is frozen
     // (either player is in a timeless scene).  Client uses this to suppress local dayTime
@@ -147,7 +185,12 @@ class Anchor : public Network {
     nlohmann::json PrepRoomState();
     void RegisterHooks();
     void GiveNextPhysicalExchangeItem();
+    void StartEponaExchange(const PendingExchangeItem& item);
     void FlushPhysicalFlagQueue();
+    void SendPacket_TriggerCutscene(u8 csState);
+    void HandlePacket_TriggerCutscene(nlohmann::json payload);
+    void SendPacket_BgKeyframeSync(const Actor* actor);
+    void HandlePacket_BgKeyframeSync(nlohmann::json payload);
     void RefreshClientActors();
     void SetDummyPlayerClientId(const Actor* actor, uint32_t clientId);
 
@@ -195,6 +238,8 @@ class Anchor : public Network {
     inline static const std::string ACTOR_STATE_UPDATE = "ACTOR_STATE_UPDATE";
     inline static const std::string ENEMY_POSITION_UPDATE = "ENEMY_POSITION_UPDATE";
     inline static const std::string ROOM_KILL_SYNC        = "ROOM_KILL_SYNC";
+    inline static const std::string BG_KEYFRAME_SYNC      = "BG_KEYFRAME_SYNC";
+    inline static const std::string TRIGGER_CUTSCENE      = "TRIGGER_CUTSCENE";
     inline static const std::string PLAYER_ATTACK_ACTOR = "PLAYER_ATTACK_ACTOR";
     inline static const std::string DAMAGE_PLAYER = "DAMAGE_PLAYER";
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";

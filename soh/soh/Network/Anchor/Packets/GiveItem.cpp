@@ -10,6 +10,8 @@
 
 extern "C" {
 #include "functions.h"
+#include "src/overlays/actors/ovl_En_Horse/z_en_horse.h"
+#include "objects/gameplay_keep/gameplay_keep.h"
 extern PlayState* gPlayState;
 }
 
@@ -45,6 +47,13 @@ static bool IsConsumableCountItem(const GetItemEntry& entry) {
 }
 
 void Anchor::SendPacket_GiveItem(u16 modId, s16 getItemId) {
+    // Suppress the echo that fires when Item_Give is called at the end of a physical
+    // exchange animation — otherwise both players would loop items back and forth.
+    if (physicalExchangeGivePending > 0) {
+        physicalExchangeGivePending--;
+        return;
+    }
+
     if (!IsSaveLoaded() || isProcessingIncomingPacket || !roomState.syncItemsAndFlags) {
         return;
     }
@@ -107,16 +116,29 @@ void Anchor::HandlePacket_GiveItem(nlohmann::json payload) {
     }
 
     // Physical Item Exchange: park the item in the queue instead of giving it immediately.
+    // Only applies to one-time story items (ITEM_CATEGORY_MAJOR: stones, medallions,
+    // weapons, equipment, songs, ...).  Consumables such as Rupees, Deku Nuts, arrows,
+    // hearts, and small/boss keys are given instantly as usual.
     // The OnGameFrameUpdate proximity check will call GiveNextPhysicalExchangeItem() when
     // players are close enough.
-    if (roomState.physicalItemExchange) {
+    if (roomState.physicalItemExchange && !IsConsumableCountItem(getItemEntry) &&
+        getItemEntry.getItemCategory == ITEM_CATEGORY_MAJOR) {
         std::string itemName;
         if (modId == MOD_NONE) {
             itemName = SohUtils::GetItemName(getItemEntry.itemId);
         } else {
             itemName = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(getItemId)).GetName().english;
         }
-        physicalItemQueue.push_back({modId, getItemId, client.name, itemName});
+        // Deduplication: don't queue the same item twice (belt-and-suspenders guard
+        // against the feedback loop even if physicalExchangeGivePending is stale).
+        bool alreadyQueued = std::any_of(
+            physicalItemQueue.begin(), physicalItemQueue.end(),
+            [&](const PendingExchangeItem& q) {
+                return q.modId == modId && q.getItemId == getItemId;
+            });
+        if (!alreadyQueued) {
+            physicalItemQueue.push_back({modId, getItemId, client.name, itemName});
+        }
         return;
     }
 
@@ -168,15 +190,16 @@ void Anchor::HandlePacket_GiveItem(nlohmann::json payload) {
 /**
  * Physical Item Exchange: pop the next queued item from physicalItemQueue and
  * give it to the local player using GiveItemEntryWithoutActor so the proper
- * "hold item above head + fanfare" animation plays.  Must only be called when
- * the player is in a state to receive items (checked by caller).
- *
- * physicalExchangeCurrentMsg is set here so the OnOpenText hook in
- * HookHandlers.cpp can inject the "Du hast von [Name] das Item [Name] erhalten!"
- * textbox for the reserved text ID PHYSICAL_EXCHANGE_TEXT_ID.
+ * "hold item above head + fanfare" animation plays.  The item's native textId
+ * is used for the in-game textbox; a Notification overlay shows who sent it.
+ * Must only be called when the player is in a state to receive items (checked
+ * by caller).
  */
 void Anchor::GiveNextPhysicalExchangeItem() {
     if (physicalItemQueue.empty() || !IsSaveLoaded() || !gPlayState) return;
+
+    // Don't pop a new item while the Epona exchange animation is in progress.
+    if (eponaExchange.phase != EponaExchangePhase::IDLE) return;
 
     Player* player = GET_PLAYER(gPlayState);
     if (player->stateFlags1 & (PLAYER_STATE1_GETTING_ITEM | PLAYER_STATE1_IN_ITEM_CS |
@@ -186,6 +209,13 @@ void Anchor::GiveNextPhysicalExchangeItem() {
 
     PendingExchangeItem item = physicalItemQueue.front();
     physicalItemQueue.pop_front();
+    physicalExchangeGivePending++; // will be consumed by SendPacket_GiveItem when Item_Give fires
+
+    // Mode B — player is mounted: route to the Epona proxy-flight exchange.
+    if (player->stateFlags1 & PLAYER_STATE1_ON_HORSE) {
+        StartEponaExchange(item);
+        return;
+    }
 
     GetItemEntry entry;
     if (item.modId == MOD_NONE) {
@@ -194,14 +224,59 @@ void Anchor::GiveNextPhysicalExchangeItem() {
         entry = Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(item.getItemId)).GetGIEntry_Copy();
     }
 
-    // Build the in-game textbox text.
-    physicalExchangeCurrentMsg = "Du hast von %r" + item.senderName + "%w das Item&%r" + item.itemName + "%w erhalten!";
-
-    // Override the entry's textId so our OnOpenText hook fires for this message.
-    entry.textId = PHYSICAL_EXCHANGE_TEXT_ID;
-
     if (!GiveItemEntryWithoutActor(gPlayState, entry)) {
         // Player wasn't ready (e.g., in midair) — put the item back.
+        physicalExchangeGivePending--; // give didn't happen, undo the counter
         physicalItemQueue.push_front(item);
+        return;
     }
+
+    // Show who sent the item as a notification overlay.
+    // The vanilla item textbox (entry.textId) is used for the in-game message.
+    Notification::Emit({
+        .itemIcon = (item.modId == MOD_NONE) ? GetTextureForItemId(entry.itemId) : nullptr,
+        .prefix = item.senderName,
+        .message = "hat dir übergeben:",
+        .suffix = item.itemName,
+    });
+
+    // Play the throw animation on the sender's dummy player.
+    for (auto& [cid, client] : clients) {
+        if (!client.self && client.online && client.player &&
+            client.name == item.senderName) {
+            Player* dummy = (Player*)client.player;
+            LinkAnimation_PlayOnce(gPlayState, &dummy->skelAnime,
+                                   (LinkAnimationHeader*)gPlayerAnim_link_normal_throw);
+            client.giverAnimTimer = 30;
+            break;
+        }
+    }
+}
+
+/**
+ * Epona Mode B: put the horse into the whinneying idle and set up the state
+ * machine so the frame hook can fly the proxy item from the sender's position
+ * to the local player.  The GetItemEntry is pre-resolved here while
+ * ItemTableManager is in scope.
+ */
+void Anchor::StartEponaExchange(const PendingExchangeItem& item) {
+    if (!gPlayState) return;
+    Player* player = GET_PLAYER(gPlayState);
+    if (!(player->stateFlags1 & PLAYER_STATE1_ON_HORSE) || !player->rideActor) return;
+
+    EnHorse* horse = (EnHorse*)player->rideActor;
+    // ENHORSE_ACT_MOUNTED_IDLE_WHINNEYING keeps speedXZ at 0 every frame
+    // and plays the neigh sound internally via the horse's own update function.
+    horse->action = ENHORSE_ACT_MOUNTED_IDLE_WHINNEYING;
+
+    // Pre-resolve the GetItemEntry so HookHandlers.cpp can populate the proxy's
+    // visual without needing its own ItemTableManager / randomizer includes.
+    eponaExchange.entry = (item.modId == MOD_NONE)
+        ? ItemTableManager::Instance->RetrieveItemEntry(MOD_NONE, item.getItemId)
+        : Rando::StaticData::RetrieveItem(static_cast<RandomizerGet>(item.getItemId)).GetGIEntry_Copy();
+
+    eponaExchange.item       = item;
+    eponaExchange.phase      = EponaExchangePhase::WHINNEYING;
+    eponaExchange.frameStart = gPlayState->state.frames;
+    eponaExchange.proxyActor = nullptr;
 }
