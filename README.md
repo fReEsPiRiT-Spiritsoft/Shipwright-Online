@@ -5,11 +5,11 @@
 <a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases/tag/0.1.0">
   <img src="https://img.shields.io/badge/Linux-Download-blue?style=for-the-badge&logo=linux" alt="Linux Download">
 </a>
-
+</b>
 <a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases/tag/0.1.0.win">
   <img src="https://img.shields.io/badge/Windows-Download-brightgreen?style=for-the-badge&logo=windows" alt="Windows Download">
 </a>
-
+</b>
 <a href="#">
   <img src="https://img.shields.io/badge/MAC-Ausstehend-lightgrey?style=for-the-badge&logo=apple" alt="Mac Ausstehend">
 </a>
