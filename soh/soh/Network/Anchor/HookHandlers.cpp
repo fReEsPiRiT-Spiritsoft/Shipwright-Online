@@ -1,5 +1,6 @@
 #include "Anchor.h"
 #include <libultraship/libultraship.h>
+#include <chrono>
 #include "soh/Enhancements/cosmetics/cosmeticsTypes.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/custom-message/CustomMessageManager.h"
@@ -703,6 +704,9 @@ void Anchor::RegisterHooks() {
     // broadcast position only for enemies within syncRadius, throttled by
     // enemySyncTickRate.
     COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+        using Clock = std::chrono::steady_clock;
+        static std::unordered_map<std::string, Clock::time_point> lastEnemyPosSyncAt;
+
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
         if (!roomState.syncEnemies) return;
         if (!IsAnyClientInSameRoom()) return;
@@ -747,10 +751,12 @@ void Anchor::RegisterHooks() {
 
         if (!inRadius) return; // outside radius: client runs local AI, no pos update
 
-        // Tick-rate throttle: 0=5Hz(÷4), 1=10Hz(÷2), 2=20Hz(÷1)
+        // Time-based throttle: 0=5Hz(200ms), 1=10Hz(100ms), 2=20Hz(50ms)
         u8 tickIdx = roomState.enemySyncTickRate < 3 ? roomState.enemySyncTickRate : 2;
-        u32 div = (tickIdx == 0) ? 4u : (tickIdx == 1) ? 2u : 1u;
-        if ((gPlayState->state.frames % div) != 0) return;
+        auto interval = std::chrono::milliseconds((tickIdx == 0) ? 200 : (tickIdx == 1) ? 100 : 50);
+        auto now = Clock::now();
+        auto syncIt = lastEnemyPosSyncAt.find(key);
+        if (syncIt != lastEnemyPosSyncAt.end() && (now - syncIt->second) < interval) return;
 
         // Position-change threshold (still apply even with tick rate to avoid
         // flooding identical data on frames that do fire).
@@ -766,6 +772,7 @@ void Anchor::RegisterHooks() {
         if (posChanged) {
             SendPacket_EnemyPositionUpdate(actor);
             trackedEnemyPos[key] = actor->world.pos;
+            lastEnemyPosSyncAt[key] = now;
         }
     });
 
@@ -876,14 +883,15 @@ void Anchor::RegisterHooks() {
     // flush the pending kill list via ROOM_KILL_SYNC so they see the same
     // enemy state we have.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        using Clock = std::chrono::steady_clock;
         static bool lastOwnerInSameRoom    = false;
         static bool lastClientInSameRoom   = false;
-        static u32 lastRoomKillSyncFrame   = 0;
+        static Clock::time_point lastRoomKillSyncAt = Clock::time_point::min();
 
         if (!IsSaveLoaded()) {
             lastOwnerInSameRoom  = false;
             lastClientInSameRoom = false;
-            lastRoomKillSyncFrame = 0;
+            lastRoomKillSyncAt = Clock::time_point::min();
             return;
         }
 
@@ -904,11 +912,12 @@ void Anchor::RegisterHooks() {
             auto pendingIt = pendingRoomKills.find(roomKey);
             bool hasPending = pendingIt != pendingRoomKills.end() && !pendingIt->second.empty();
             bool roomShared = IsEnemyAuthority() ? clientNow : ownerNow;
-            u32 frameNow = gPlayState->state.frames;
+            auto now = Clock::now();
+            constexpr auto kRoomKillResendInterval = std::chrono::milliseconds(350);
 
-            if (hasPending && roomShared && (lastRoomKillSyncFrame == 0 || (frameNow - lastRoomKillSyncFrame) >= 20)) {
+            if (hasPending && roomShared && (lastRoomKillSyncAt == Clock::time_point::min() || (now - lastRoomKillSyncAt) >= kRoomKillResendInterval)) {
                 SendPacket_RoomKillSync();
-                lastRoomKillSyncFrame = frameNow;
+                lastRoomKillSyncAt = now;
             }
         }
 
