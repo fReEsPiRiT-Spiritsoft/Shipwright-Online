@@ -12,19 +12,6 @@ namespace {
 bool IsRollingBoulderActor(s16 actorId) {
     return actorId == ACTOR_EN_BW || actorId == ACTOR_EN_GOROIWA;
 }
-
-Actor* FindActorByKeyInAllCategories(const std::string& actorKey, s16 sceneNum) {
-    for (int cat = 0; cat < ACTORCAT_MAX; ++cat) {
-        Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
-        while (actor != nullptr) {
-            if (Anchor::GetActorKey(actor, sceneNum) == actorKey) {
-                return actor;
-            }
-            actor = actor->next;
-        }
-    }
-    return nullptr;
-}
 } // namespace
 
 void Anchor::SendPacket_BoulderSpawn(const Actor* actor) {
@@ -71,8 +58,14 @@ void Anchor::HandlePacket_BoulderSpawn(nlohmann::json payload) {
 
     std::string actorKey = payload["actorKey"].get<std::string>();
 
-    if (FindActorByKeyInAllCategories(actorKey, sceneNum) != nullptr) {
-        return;
+    for (int cat = 0; cat < ACTORCAT_MAX; ++cat) {
+        Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+        while (actor != nullptr) {
+            if (GetActorKey(actor, sceneNum) == actorKey) {
+                return;
+            }
+            actor = actor->next;
+        }
     }
 
     f32 posX = payload.value("posX", 0.0f);
