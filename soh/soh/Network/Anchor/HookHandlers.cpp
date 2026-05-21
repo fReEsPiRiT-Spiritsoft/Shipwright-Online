@@ -703,7 +703,7 @@ void Anchor::RegisterHooks() {
     // Authority: broadcast enemy HP/kills always (when sync is on) and
     // broadcast position only for enemies within syncRadius, throttled by
     // enemySyncTickRate.
-    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+    COND_HOOK(OnActorUpdate, isConnected, ([&](void* actorRef) {
         using Clock = std::chrono::steady_clock;
         static std::unordered_map<std::string, Clock::time_point> lastEnemyPosSyncAt;
 
@@ -774,7 +774,7 @@ void Anchor::RegisterHooks() {
             trackedEnemyPos[key] = actor->world.pos;
             lastEnemyPosSyncAt[key] = now;
         }
-    });
+    }));
 
     // Non-authority: freeze enemy AI when the authority is in the same scene+room.
     // Non-authority: keep tracking remote HP overrides so we don't echo them back.
