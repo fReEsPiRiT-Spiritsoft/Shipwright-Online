@@ -81,6 +81,7 @@ void Anchor::SendPacket_EnemyPositionUpdate(const Actor* actor) {
     payload["posY"]     = actor->world.pos.y;
     payload["posZ"]     = actor->world.pos.z;
     payload["rotY"]     = (int)actor->world.rot.y;
+    payload["shapeRotY"] = (int)actor->shape.rot.y;
     payload["health"]   = actor->colChkInfo.health;
 
     SendJsonToRemote(payload);
@@ -100,6 +101,7 @@ void Anchor::HandlePacket_EnemyPositionUpdate(nlohmann::json payload) {
     float posY = payload.value("posY", 0.0f);
     float posZ = payload.value("posZ", 0.0f);
     s16   rotY = (s16)payload.value("rotY", 0);
+    s16 shapeRotY = (s16)payload.value("shapeRotY", (int)rotY);
     u8  health = payload.value("health", (u8)1);
 
     for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
@@ -110,8 +112,8 @@ void Anchor::HandlePacket_EnemyPositionUpdate(nlohmann::json payload) {
                 actor->world.pos.y = posY;
                 actor->world.pos.z = posZ;
                 actor->world.rot.y = rotY;
-                // Keep the shape (rendering) rotation in sync too
-                actor->shape.rot.y = rotY;
+                // Keep visual and physical rotation aligned.
+                actor->shape.rot.y = shapeRotY;
 
                 if (health != actor->colChkInfo.health) {
                     actor->colChkInfo.health = health;

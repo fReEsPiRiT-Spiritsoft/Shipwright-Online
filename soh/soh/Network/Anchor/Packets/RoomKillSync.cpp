@@ -1,12 +1,81 @@
 #include "soh/Network/Anchor/Anchor.h"
 #include <nlohmann/json.hpp>
 #include <libultraship/libultraship.h>
+#include <limits>
 
 extern "C" {
 #include "variables.h"
 #include "functions.h"
 extern PlayState* gPlayState;
 }
+
+namespace {
+struct RoomKillTarget {
+    std::string actorKey;
+    s16 actorId = -1;
+    bool hasApproxPos = false;
+    Vec3f approxPos = { 0.0f, 0.0f, 0.0f };
+};
+
+RoomKillTarget BuildTargetFromActorKey(const std::string& actorKey) {
+    RoomKillTarget target;
+    target.actorKey = actorKey;
+
+    // Legacy key format embeds actorId + home.pos as ints:
+    // scene_category_actorId_room_params_homeX_homeY_homeZ[_homeRotX_homeRotY_homeRotZ]
+    int sceneNum = 0;
+    int category = 0;
+    int actorId = 0;
+    int roomNum = 0;
+    int params = 0;
+    int homeX = 0;
+    int homeY = 0;
+    int homeZ = 0;
+    int parsed = sscanf(actorKey.c_str(), "%d_%d_%d_%d_%d_%d_%d_%d",
+                        &sceneNum, &category, &actorId, &roomNum, &params, &homeX, &homeY, &homeZ);
+    if (parsed == 8) {
+        target.actorId = (s16)actorId;
+        target.hasApproxPos = true;
+        target.approxPos.x = (f32)homeX;
+        target.approxPos.y = (f32)homeY;
+        target.approxPos.z = (f32)homeZ;
+    }
+
+    return target;
+}
+
+Actor* FindClosestActorOfTypeInRoom(s16 sceneNum, s8 roomNum, s16 actorId, const Vec3f& approxPos, f32 radius) {
+    Actor* best = nullptr;
+    f32 bestDistSq = std::numeric_limits<f32>::max();
+    f32 maxDistSq = radius * radius;
+
+    for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+        Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+        while (actor != nullptr) {
+            if (actor->id != actorId || actor->room != roomNum) {
+                actor = actor->next;
+                continue;
+            }
+
+            // Keep fallback bounded to the same scene and a sane radius.
+            if (sceneNum != gPlayState->sceneNum) {
+                actor = actor->next;
+                continue;
+            }
+
+            f32 distSq = Math3D_Vec3fDistSq(&actor->home.pos, &approxPos);
+            if (distSq <= maxDistSq && distSq < bestDistSq) {
+                best = actor;
+                bestDistSq = distSq;
+            }
+
+            actor = actor->next;
+        }
+    }
+
+    return best;
+}
+} // namespace
 
 /**
  * ROOM_KILL_SYNC
@@ -50,7 +119,18 @@ void Anchor::SendPacket_RoomKillSync() {
     payload["kills"]    = nlohmann::json::array();
 
     for (const auto& key : it->second) {
-        payload["kills"].push_back(key);
+        RoomKillTarget target = BuildTargetFromActorKey(key);
+
+        nlohmann::json killEntry;
+        killEntry["actorKey"] = key;
+        killEntry["actorId"] = target.actorId;
+        if (target.hasApproxPos) {
+            killEntry["approxPos"]["x"] = target.approxPos.x;
+            killEntry["approxPos"]["y"] = target.approxPos.y;
+            killEntry["approxPos"]["z"] = target.approxPos.z;
+        }
+
+        payload["kills"].push_back(killEntry);
     }
 
     SPDLOG_INFO("[Anchor:EnemySync] {}: ROOM_KILL_SYNC send | scene=0x{:02x} room={} kills={}",
@@ -80,9 +160,30 @@ void Anchor::HandlePacket_RoomKillSync(nlohmann::json payload) {
     SPDLOG_INFO("[Anchor:EnemySync] {}: ROOM_KILL_SYNC recv | scene=0x{:02x} room={} kills={}",
                 IsEnemyAuthority() ? "HOST" : "CLIENT", sceneNum, roomNum, receivedKills);
 
-    for (const auto& actorKeyJson : payload["kills"]) {
-        std::string actorKey = actorKeyJson.get<std::string>();
+    for (const auto& killEntry : payload["kills"]) {
+        RoomKillTarget target;
+
+        // Backward-compat: accept both legacy string entries and object entries.
+        if (killEntry.is_string()) {
+            target = BuildTargetFromActorKey(killEntry.get<std::string>());
+        } else if (killEntry.is_object() && killEntry.contains("actorKey")) {
+            target.actorKey = killEntry["actorKey"].get<std::string>();
+            target.actorId = killEntry.value("actorId", (s16)-1);
+            if (killEntry.contains("approxPos")) {
+                const auto& approxPos = killEntry["approxPos"];
+                target.approxPos.x = approxPos.value("x", 0.0f);
+                target.approxPos.y = approxPos.value("y", 0.0f);
+                target.approxPos.z = approxPos.value("z", 0.0f);
+                target.hasApproxPos = true;
+            }
+        } else {
+            continue;
+        }
+
+        std::string actorKey = target.actorKey;
         bool found = false;
+        bool usedFallback = false;
+        Actor* matchedActor = nullptr;
 
         for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
@@ -90,13 +191,8 @@ void Anchor::HandlePacket_RoomKillSync(nlohmann::json payload) {
                 Actor* next = actor->next; // cache before potential invalidation
                 if (GetActorKey(actor, sceneNum) == actorKey)
                 {
-                    // Kill regardless of current health. Some enemies can sit at
-                    // health==0 for a while before calling Actor_Kill themselves.
-                    // ROOM_KILL_SYNC is an authoritative "remove now" signal.
-                    actor->colChkInfo.health = 0;
-                    Actor_Kill(actor);
+                    matchedActor = actor;
                     found = true;
-                    appliedKills++;
                     break; // move on to next actorKey in the list
                 }
                 actor = next;
@@ -104,6 +200,30 @@ void Anchor::HandlePacket_RoomKillSync(nlohmann::json payload) {
 
             if (found) {
                 break;
+            }
+        }
+
+        // Pragmatic overkill fallback:
+        // if the exact key is gone/drifted but we know the actor type and spawn area,
+        // take the nearest matching actor in the same room.
+        if (!found && target.actorId >= 0 && target.hasApproxPos) {
+            matchedActor = FindClosestActorOfTypeInRoom(sceneNum, roomNum, target.actorId, target.approxPos, 200.0f);
+            if (matchedActor != nullptr) {
+                found = true;
+                usedFallback = true;
+            }
+        }
+
+        if (found && matchedActor != nullptr) {
+            // Kill regardless of current health. Some enemies can sit at
+            // health==0 for a while before calling Actor_Kill themselves.
+            // ROOM_KILL_SYNC is an authoritative "remove now" signal.
+            matchedActor->colChkInfo.health = 0;
+            Actor_Kill(matchedActor);
+            appliedKills++;
+            if (usedFallback) {
+                SPDLOG_INFO("[Anchor:EnemySync] {}: ROOM_KILL_SYNC fallback matched | actorKey={} | actorId={} | room={}",
+                            IsEnemyAuthority() ? "HOST" : "CLIENT", actorKey, (int)target.actorId, roomNum);
             }
         }
 

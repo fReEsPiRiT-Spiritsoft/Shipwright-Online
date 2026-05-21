@@ -139,6 +139,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_ActorStateUpdate(payload);
             else if (packetType == ENEMY_POSITION_UPDATE)
                 HandlePacket_EnemyPositionUpdate(payload);
+            else if (packetType == BOULDER_SPAWN)
+                HandlePacket_BoulderSpawn(payload);
             else if (packetType == ENEMY_DROP_ITEM)
                 HandlePacket_EnemyDropItem(payload);
             else if (packetType == ROOM_KILL_SYNC)

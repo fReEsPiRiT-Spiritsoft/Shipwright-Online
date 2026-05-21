@@ -142,6 +142,10 @@ class Anchor : public Network {
     // so the OnActorSpawn hook does not echo the spawned actor back to the authority.
     bool isSpawningRemoteCollectible = false;
 
+    // Both sides: set to true while HandlePacket_BoulderSpawn spawns a rolling
+    // boulder so the local OnActorSpawn hook does not echo it back.
+    bool isSpawningRemoteBoulder = false;
+
     // Authority-side: collectibles that spawned during the current frame's actor updates.
     // Populated by OnActorSpawn(EN_ITEM00); consumed and cleared each frame.
     struct PendingCollectibleSpawn { s16 params; Vec3f pos; };
@@ -213,6 +217,7 @@ class Anchor : public Network {
     void HandlePacket_ActorKilled(nlohmann::json payload);
     void HandlePacket_ActorStateUpdate(nlohmann::json payload);
     void HandlePacket_EnemyPositionUpdate(nlohmann::json payload);
+    void HandlePacket_BoulderSpawn(nlohmann::json payload);
     void HandlePacket_RoomKillSync(nlohmann::json payload);
     void HandlePacket_PlayerAttackActor(nlohmann::json payload);
     void HandlePacket_ConsumeAdultTradeItem(nlohmann::json payload);
@@ -249,6 +254,7 @@ class Anchor : public Network {
     inline static const std::string ACTOR_KILLED = "ACTOR_KILLED";
     inline static const std::string ACTOR_STATE_UPDATE = "ACTOR_STATE_UPDATE";
     inline static const std::string ENEMY_POSITION_UPDATE = "ENEMY_POSITION_UPDATE";
+    inline static const std::string BOULDER_SPAWN = "BOULDER_SPAWN";
     inline static const std::string ROOM_KILL_SYNC        = "ROOM_KILL_SYNC";
     inline static const std::string BG_KEYFRAME_SYNC      = "BG_KEYFRAME_SYNC";
     inline static const std::string TRIGGER_CUTSCENE      = "TRIGGER_CUTSCENE";
@@ -299,6 +305,7 @@ class Anchor : public Network {
     void SendPacket_ActorKilled(const Actor* actor);
     void SendPacket_ActorStateUpdate(const Actor* actor);
     void SendPacket_EnemyPositionUpdate(const Actor* actor);
+    void SendPacket_BoulderSpawn(const Actor* actor);
     void SendPacket_RoomKillSync();
     bool IsAnyClientInSameRoom() const;
     bool IsOwnerInSameRoom() const;

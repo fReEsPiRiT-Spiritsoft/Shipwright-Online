@@ -84,6 +84,15 @@ void Anchor::HandlePacket_PlayerAttackActor(nlohmann::json payload) {
                 actor->colChkInfo.damage = 0;
                 SPDLOG_INFO("[Anchor:EnemySync] HOST: Damage applied | actorKey={} | postHealth={}", 
                             actorKey, (int)actor->colChkInfo.health);
+
+                // Overkill safeguard: if remote damage already brought HP to zero,
+                // finalize death immediately on authority to avoid race conditions
+                // where client-side death advances faster than host actor teardown.
+                if (actor->colChkInfo.health == 0) {
+                    SPDLOG_INFO("[Anchor:EnemySync] HOST: Overkill finalize | actorKey={} | pos=({:.1f},{:.1f},{:.1f})",
+                                actorKey, actor->world.pos.x, actor->world.pos.y, actor->world.pos.z);
+                    Actor_Kill(actor);
+                }
                 return;
             }
             actor = actor->next;

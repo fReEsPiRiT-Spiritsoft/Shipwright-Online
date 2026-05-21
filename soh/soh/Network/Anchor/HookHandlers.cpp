@@ -417,6 +417,37 @@ void Anchor::RegisterHooks() {
         }
     });
 
+    // Non-authority scrub stability: when the owner is present in the same room,
+    // stop local scrub AI so state decisions (pop-up/burrow) stay authority-driven.
+    // Outside sync radius, keep vanilla local behavior.
+    COND_ID_HOOK(ShouldActorUpdate, ACTOR_EN_DEKUNUTS, isConnected, [&](void* refActor, bool* should) {
+        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies || !IsOwnerInSameRoom() || !gPlayState) return;
+
+        Actor* actor = static_cast<Actor*>(refActor);
+        if (roomState.syncRadius > 0) {
+            Player* localLink = GET_PLAYER(gPlayState);
+            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+            if (Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) > rSq) return;
+        }
+
+        *should = false;
+    });
+
+    COND_ID_HOOK(ShouldActorUpdate, ACTOR_EN_DNS, isConnected, [&](void* refActor, bool* should) {
+        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies || !IsOwnerInSameRoom() || !gPlayState) return;
+
+        Actor* actor = static_cast<Actor*>(refActor);
+        if (roomState.syncRadius > 0) {
+            Player* localLink = GET_PLAYER(gPlayState);
+            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+            if (Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) > rSq) return;
+        }
+
+        *should = false;
+    });
+
     COND_VB_SHOULD(VB_HAMMER_TOTEM_BREAK, isConnected, {
         BgHidanDalm* actor = va_arg(args, BgHidanDalm*);
 
@@ -808,6 +839,24 @@ void Anchor::RegisterHooks() {
         if (isSpawningRemoteCollectible) return;
         Actor* item = (Actor*)actorRef;
         recentCollectibleSpawns.push_back({item->params, item->world.pos});
+    });
+
+    // Both sides: when a rolling boulder spawns (Death Mountain path etc.),
+    // relay a spawn event so peers can spawn the same obstacle deterministically.
+    COND_ID_HOOK(OnActorSpawn, ACTOR_EN_BW, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !roomState.syncEnemies || !gPlayState) return;
+        if (isSpawningRemoteBoulder) return;
+        Actor* actor = (Actor*)actorRef;
+        if (actor->room != gPlayState->roomCtx.curRoom.num) return;
+        SendPacket_BoulderSpawn(actor);
+    });
+
+    COND_ID_HOOK(OnActorSpawn, ACTOR_EN_GOROIWA, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !roomState.syncEnemies || !gPlayState) return;
+        if (isSpawningRemoteBoulder) return;
+        Actor* actor = (Actor*)actorRef;
+        if (actor->room != gPlayState->roomCtx.curRoom.num) return;
+        SendPacket_BoulderSpawn(actor);
     });
 
     // Authority: broadcast enemy deaths so all clients can kill their local copy.

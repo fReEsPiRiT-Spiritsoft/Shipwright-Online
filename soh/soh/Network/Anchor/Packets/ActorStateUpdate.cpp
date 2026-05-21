@@ -23,8 +23,8 @@ extern PlayState* gPlayState;
  */
 
 std::string Anchor::GetActorKey(const Actor* actor, s16 sceneNum) {
-    char buf[96];
-    snprintf(buf, sizeof(buf), "%d_%d_%d_%d_%d_%d_%d_%d",
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%d_%d_%d_%d_%d_%d_%d_%d_%d_%d_%d",
         (int)sceneNum,
         (int)actor->category,
         (int)actor->id,
@@ -32,7 +32,10 @@ std::string Anchor::GetActorKey(const Actor* actor, s16 sceneNum) {
         (int)actor->params,
         (int)actor->home.pos.x,
         (int)actor->home.pos.y,
-        (int)actor->home.pos.z);
+        (int)actor->home.pos.z,
+        (int)actor->home.rot.x,
+        (int)actor->home.rot.y,
+        (int)actor->home.rot.z);
     return std::string(buf);
 }
 
@@ -54,6 +57,7 @@ void Anchor::SendPacket_ActorStateUpdate(const Actor* actor) {
     payload["posY"] = actor->world.pos.y;
     payload["posZ"] = actor->world.pos.z;
     payload["rotY"] = (int)actor->world.rot.y;
+    payload["shapeRotY"] = (int)actor->shape.rot.y;
 
     SendJsonToRemote(payload);
 }
@@ -71,6 +75,7 @@ void Anchor::HandlePacket_ActorStateUpdate(nlohmann::json payload) {
     float posY = payload.value("posY", 0.0f);
     float posZ = payload.value("posZ", 0.0f);
     s16   rotY = (s16)payload.value("rotY", 0);
+    s16 shapeRotY = (s16)payload.value("shapeRotY", (int)rotY);
     bool hasPos = payload.contains("posX");
 
     // Find matching actor in the local scene and update its HP
@@ -85,6 +90,7 @@ void Anchor::HandlePacket_ActorStateUpdate(nlohmann::json payload) {
                     actor->world.pos.y = posY;
                     actor->world.pos.z = posZ;
                     actor->world.rot.y = rotY;
+                    actor->shape.rot.y = shapeRotY;
                 }
                 // Mark this as a remote update so OnActorUpdate on the non-authority
                 // won't forward the change back to the owner as a local hit.
