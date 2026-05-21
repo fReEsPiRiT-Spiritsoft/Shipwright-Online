@@ -53,7 +53,16 @@ void Anchor::SendPacket_RoomKillSync() {
         payload["kills"].push_back(key);
     }
 
-    pendingRoomKills.erase(it); // consumed — don't re-send on next frame
+    SPDLOG_INFO("[Anchor:EnemySync] {}: ROOM_KILL_SYNC send | scene=0x{:02x} room={} kills={}",
+                IsEnemyAuthority() ? "HOST" : "CLIENT", gPlayState->sceneNum,
+                (s8)gPlayState->roomCtx.curRoom.num, it->second.size());
+
+    // Keep client-side pending entries for reliability retries until authority
+    // confirms via ACTOR_KILLED. Host keeps previous behavior.
+    if (IsEnemyAuthority()) {
+        pendingRoomKills.erase(it);
+    }
+
     SendJsonToRemote(payload);
 }
 
@@ -64,8 +73,16 @@ void Anchor::HandlePacket_RoomKillSync(nlohmann::json payload) {
     s16 sceneNum = payload.value("sceneNum", (s16)SCENE_ID_MAX);
     if (sceneNum != gPlayState->sceneNum) return;
 
+    s8 roomNum = payload.value("roomNum", (s8)-1);
+    size_t receivedKills = payload["kills"].size();
+    size_t appliedKills = 0;
+
+    SPDLOG_INFO("[Anchor:EnemySync] {}: ROOM_KILL_SYNC recv | scene=0x{:02x} room={} kills={}",
+                IsEnemyAuthority() ? "HOST" : "CLIENT", sceneNum, roomNum, receivedKills);
+
     for (const auto& actorKeyJson : payload["kills"]) {
         std::string actorKey = actorKeyJson.get<std::string>();
+        bool found = false;
 
         for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
@@ -76,10 +93,24 @@ void Anchor::HandlePacket_RoomKillSync(nlohmann::json payload) {
                 {
                     actor->colChkInfo.health = 0;
                     Actor_Kill(actor);
+                    found = true;
+                    appliedKills++;
                     break; // move on to next actorKey in the list
                 }
                 actor = next;
             }
+
+            if (found) {
+                break;
+            }
+        }
+
+        if (!found) {
+            SPDLOG_WARN("[Anchor:EnemySync] {}: ROOM_KILL_SYNC actor not found/already dead | actorKey={} | scene=0x{:02x} room={}",
+                        IsEnemyAuthority() ? "HOST" : "CLIENT", actorKey, sceneNum, roomNum);
         }
     }
+
+    SPDLOG_INFO("[Anchor:EnemySync] {}: ROOM_KILL_SYNC applied | scene=0x{:02x} room={} applied={}/{}",
+                IsEnemyAuthority() ? "HOST" : "CLIENT", sceneNum, roomNum, appliedKills, receivedKills);
 }

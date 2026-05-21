@@ -45,6 +45,17 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
 
     std::string actorKey = payload["actorKey"].get<std::string>();
 
+    // Confirmation path for ROOM_KILL_SYNC retries:
+    // when authority confirms a kill, drop this key from all pending room sets.
+    for (auto it = pendingRoomKills.begin(); it != pendingRoomKills.end();) {
+        it->second.erase(actorKey);
+        if (it->second.empty()) {
+            it = pendingRoomKills.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
         Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
         while (actor != nullptr) {
