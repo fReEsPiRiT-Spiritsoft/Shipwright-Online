@@ -26,7 +26,9 @@ void Anchor::SendPacket_PlayerUpdate() {
 
     uint32_t currentPlayerCount = 0;
     for (auto& [clientId, client] : clients) {
-        if (client.sceneNum == gPlayState->sceneNum && client.online && client.isSaveLoaded && !client.self) {
+        // Always publish live state to connected, save-loaded peers.
+        // Gating by scene can deadlock scene/room convergence if state is stale.
+        if (client.online && client.isSaveLoaded && !client.self) {
             currentPlayerCount++;
         }
     }
@@ -71,7 +73,7 @@ void Anchor::SendPacket_PlayerUpdate() {
     payload["quiet"] = true;
 
     for (auto& [clientId, client] : clients) {
-        if (client.sceneNum == gPlayState->sceneNum && client.online && client.isSaveLoaded && !client.self) {
+        if (client.online && client.isSaveLoaded && !client.self) {
             payload["targetClientId"] = clientId;
             SendJsonToRemote(payload);
         }

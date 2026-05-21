@@ -604,7 +604,16 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || IsEnemyAuthority()) return;
         if (!roomState.syncEnemies) return; // sync off → vanilla behaviour
-        if (!IsOwnerInSameRoom()) return;
+
+        // Avoid dropping client hits when owner room-state is briefly stale.
+        // If we currently know no valid owner, keep vanilla local behavior.
+        bool ownerReachable = false;
+        for (auto& [id, client] : clients) {
+            if (id != roomState.ownerClientId) continue;
+            ownerReachable = client.online && client.isSaveLoaded;
+            break;
+        }
+        if (!ownerReachable) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
@@ -860,10 +869,12 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
         static bool lastOwnerInSameRoom    = false;
         static bool lastClientInSameRoom   = false;
+        static u32 lastRoomKillSyncFrame   = 0;
 
         if (!IsSaveLoaded()) {
             lastOwnerInSameRoom  = false;
             lastClientInSameRoom = false;
+            lastRoomKillSyncFrame = 0;
             return;
         }
 
@@ -875,6 +886,22 @@ void Anchor::RegisterHooks() {
             SendPacket_RoomKillSync();
         if (IsEnemyAuthority() && !lastClientInSameRoom && clientNow)
             SendPacket_RoomKillSync();
+
+        // Reliability resend while peers share a room and we still have pending kills.
+        // This avoids missed edge-trigger packets causing persistent desync.
+        if (gPlayState) {
+            std::string roomKey = std::to_string(gPlayState->sceneNum) + "_" +
+                                  std::to_string((s8)gPlayState->roomCtx.curRoom.num);
+            auto pendingIt = pendingRoomKills.find(roomKey);
+            bool hasPending = pendingIt != pendingRoomKills.end() && !pendingIt->second.empty();
+            bool roomShared = IsEnemyAuthority() ? clientNow : ownerNow;
+            u32 frameNow = gPlayState->state.frames;
+
+            if (hasPending && roomShared && (lastRoomKillSyncFrame == 0 || (frameNow - lastRoomKillSyncFrame) >= 20)) {
+                SendPacket_RoomKillSync();
+                lastRoomKillSyncFrame = frameNow;
+            }
+        }
 
         lastOwnerInSameRoom  = ownerNow;
         lastClientInSameRoom = clientNow;
