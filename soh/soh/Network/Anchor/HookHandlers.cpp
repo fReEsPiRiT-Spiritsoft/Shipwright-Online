@@ -92,6 +92,13 @@ void Anchor::RegisterHooks() {
     });
 
     COND_HOOK(OnPlayerUpdate, isConnected, [&]() {
+        static bool lastStateValid = false;
+        static s16 lastSceneNum = SCENE_ID_MAX;
+        static s8 lastRoomNum = -1;
+        static s32 lastEntranceIndex = 0;
+        static u16 lastTimeIncrement = 0;
+        static u32 lastStateSyncFrame = 0;
+
         if (justLoadedSave) {
             justLoadedSave = false;
             SendPacket_RequestTeamState();
@@ -100,6 +107,29 @@ void Anchor::RegisterHooks() {
         if (shouldRefreshActors) {
             shouldRefreshActors = false;
             RefreshClientActors();
+        }
+
+        if (IsSaveLoaded()) {
+            s16 sceneNum = gPlayState->sceneNum;
+            s8 roomNum = gPlayState->roomCtx.curRoom.num;
+            s32 entranceIndex = gSaveContext.entranceIndex;
+            u16 timeIncrement = (u16)gTimeIncrement;
+            u32 currentFrame = gPlayState->state.frames;
+            bool stateChanged = !lastStateValid || lastSceneNum != sceneNum || lastRoomNum != roomNum ||
+                                lastEntranceIndex != entranceIndex || lastTimeIncrement != timeIncrement;
+            bool heartbeatDue = !lastStateValid || (currentFrame - lastStateSyncFrame) >= 40;
+
+            if (stateChanged || heartbeatDue) {
+                SendPacket_UpdateClientState();
+                lastStateValid = true;
+                lastSceneNum = sceneNum;
+                lastRoomNum = roomNum;
+                lastEntranceIndex = entranceIndex;
+                lastTimeIncrement = timeIncrement;
+                lastStateSyncFrame = currentFrame;
+            }
+        } else {
+            lastStateValid = false;
         }
 
         SendPacket_PlayerUpdate();
