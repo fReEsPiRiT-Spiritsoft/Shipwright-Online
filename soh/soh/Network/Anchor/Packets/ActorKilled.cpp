@@ -26,10 +26,13 @@ extern PlayState* gPlayState;
 void Anchor::SendPacket_ActorKilled(const Actor* actor) {
     if (!IsSaveLoaded()) return;
 
+    std::string actorKey = GetActorKey(actor, gPlayState->sceneNum);
+    SPDLOG_INFO("[Anchor:EnemySync] HOST: ACTOR_KILLED send | actorKey={} | scene=0x{:02x}", actorKey, gPlayState->sceneNum);
+
     nlohmann::json payload;
     payload["type"] = ACTOR_KILLED;
     payload["sceneNum"] = gPlayState->sceneNum;
-    payload["actorKey"] = GetActorKey(actor, gPlayState->sceneNum);
+    payload["actorKey"] = actorKey;
     payload["actorId"] = actor->id;
     payload["actorCategory"] = actor->category;
 
@@ -44,6 +47,7 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
     if (sceneNum != gPlayState->sceneNum) return;
 
     std::string actorKey = payload["actorKey"].get<std::string>();
+    SPDLOG_INFO("[Anchor:EnemySync] CLIENT: ACTOR_KILLED recv | actorKey={} | scene=0x{:02x}", actorKey, sceneNum);
 
     // Confirmation path for ROOM_KILL_SYNC retries:
     // when authority confirms a kill, drop this key from all pending room sets.
@@ -67,9 +71,12 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
                 // when the authoritative kill signal arrives.
                 actor->colChkInfo.health = 0;
                 Actor_Kill(actor);
+                SPDLOG_INFO("[Anchor:EnemySync] CLIENT: ACTOR_KILLED applied | actorKey={}", actorKey);
                 return;
             }
             actor = next;
         }
     }
+
+    SPDLOG_WARN("[Anchor:EnemySync] CLIENT: ACTOR_KILLED actor not found | actorKey={} | scene=0x{:02x}", actorKey, sceneNum);
 }

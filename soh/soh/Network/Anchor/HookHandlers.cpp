@@ -645,7 +645,6 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
         if (!roomState.syncEnemies) return;
-        if (!IsAnyClientInSameRoom()) return;
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
@@ -731,6 +730,10 @@ void Anchor::RegisterHooks() {
         if (healthChanged) {
             SendPacket_ActorStateUpdate(actor);
         }
+
+        // ── Position sync: room-gated + radius-gated + tick-rate throttled ──
+        // Health sync above must always run, even if room-state is briefly stale.
+        if (!IsAnyClientInSameRoom()) return;
 
         // ── Position sync: radius-gated + tick-rate throttled ───────────────
         // Check if any client is within syncRadius of this enemy.
