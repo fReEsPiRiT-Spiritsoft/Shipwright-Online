@@ -38,7 +38,7 @@ void Anchor::SendPacket_PlayerAttackActor(const Actor* actor, u8 damage) {
 
     nlohmann::json payload;
     payload["type"]       = PLAYER_ATTACK_ACTOR;
-    payload["quiet"]      = true; // high-frequency, no debug spam
+    payload["quiet"]      = false; // enable logging for debug tracking
     payload["sceneNum"]   = gPlayState->sceneNum;
     payload["actorKey"]   = GetActorKey(actor, gPlayState->sceneNum);
     payload["damage"]     = damage;
@@ -77,12 +77,17 @@ void Anchor::HandlePacket_PlayerAttackActor(nlohmann::json payload) {
                 // transition into its native death action (falling animation, sounds,
                 // etc.).  When that sequence completes the actor calls Actor_Kill
                 // itself, firing OnActorKill → SendPacket_ActorKilled to all clients.
+                SPDLOG_INFO("[Anchor:EnemySync] HOST: Damage packet received | actorKey={} | damage={} | preHealth={} | pos=({:.1f},{:.1f},{:.1f})", 
+                            actorKey, (int)damage, (int)actor->colChkInfo.health, actor->world.pos.x, actor->world.pos.y, actor->world.pos.z);
                 actor->colChkInfo.damage = damage;
                 Actor_ApplyDamage(actor);
                 actor->colChkInfo.damage = 0;
+                SPDLOG_INFO("[Anchor:EnemySync] HOST: Damage applied | actorKey={} | postHealth={}", 
+                            actorKey, (int)actor->colChkInfo.health);
                 return;
             }
             actor = actor->next;
         }
     }
+    SPDLOG_WARN("[Anchor:EnemySync] HOST: Could not find actor for damage packet | actorKey={}", actorKey);
 }

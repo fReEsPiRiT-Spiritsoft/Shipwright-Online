@@ -630,6 +630,9 @@ void Anchor::RegisterHooks() {
 
         u8 damage = actor->colChkInfo.damage;
         actor->colChkInfo.damage = 0; // Prevent local HP reduction and death state
+        std::string actorKey = GetActorKey(actor, gPlayState->sceneNum);
+        SPDLOG_INFO("[Anchor:EnemySync] CLIENT: Hit intercepted | actorKey={} | damage={} | pos=({:.1f},{:.1f},{:.1f}) | health={}", 
+                    actorKey, (int)damage, actor->world.pos.x, actor->world.pos.y, actor->world.pos.z, (int)actor->colChkInfo.health);
         SendPacket_PlayerAttackActor(actor, damage);
         Actor_SetColorFilter(actor, 0x4000, 0xFF, 0, 8);
     });
@@ -806,6 +809,8 @@ void Anchor::RegisterHooks() {
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
 
         std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        SPDLOG_INFO("[Anchor:EnemySync] HOST: Actor killed | actorKey={} | pos=({:.1f},{:.1f},{:.1f})", 
+                    key, actor->world.pos.x, actor->world.pos.y, actor->world.pos.z);
         trackedEnemyHealth.erase(key);
         trackedEnemyPos.erase(key);
         SendPacket_ActorKilled(actor);
@@ -843,12 +848,16 @@ void Anchor::RegisterHooks() {
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
 
+        std::string actorKey = GetActorKey(actor, gPlayState->sceneNum);
         std::string roomKey = std::to_string(gPlayState->sceneNum) + "_" +
                               std::to_string((s8)gPlayState->roomCtx.curRoom.num);
-        pendingRoomKills[roomKey].insert(GetActorKey(actor, gPlayState->sceneNum));
+        pendingRoomKills[roomKey].insert(actorKey);
+        SPDLOG_INFO("[Anchor:EnemySync] CLIENT: Local kill queued | actorKey={} | ownerPresent={} | pos=({:.1f},{:.1f},{:.1f})", 
+                    actorKey, IsOwnerInSameRoom() ? "yes" : "no", actor->world.pos.x, actor->world.pos.y, actor->world.pos.z);
 
         // Authority already present → flush immediately so it kills the actor now.
         if (IsOwnerInSameRoom()) {
+            SPDLOG_INFO("[Anchor:EnemySync] CLIENT: ROOM_KILL_SYNC sent immediately (owner in room)");
             SendPacket_RoomKillSync();
         }
     });

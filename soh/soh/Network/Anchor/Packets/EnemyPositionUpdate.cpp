@@ -33,8 +33,12 @@ bool Anchor::IsAnyClientInSameRoom() const {
     s8  myRoom  = (s8)gPlayState->roomCtx.curRoom.num;
     for (auto& [id, client] : clients) {
         if (client.self || !client.online || !client.isSaveLoaded) continue;
-        if (client.sceneNum == myScene && client.curRoomNum == myRoom) return true;
+        if (client.sceneNum == myScene && client.curRoomNum == myRoom) {
+            SPDLOG_DEBUG("[Anchor:EnemySync] HOST: IsAnyClientInSameRoom=true | scene=0x{:02x} room={}", myScene, myRoom);
+            return true;
+        }
     }
+    SPDLOG_DEBUG("[Anchor:EnemySync] HOST: IsAnyClientInSameRoom=false | scene=0x{:02x} room={}", myScene, myRoom);
     return false;
 }
 
@@ -49,8 +53,17 @@ bool Anchor::IsOwnerInSameRoom() const {
     s8  myRoom  = (s8)gPlayState->roomCtx.curRoom.num;
     for (auto& [id, client] : clients) {
         if (id != roomState.ownerClientId) continue;
-        return client.sceneNum == myScene && client.curRoomNum == myRoom;
+        bool ownerHere = client.sceneNum == myScene && client.curRoomNum == myRoom;
+        if (ownerHere) {
+            SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=true | scene=0x{:02x} room={} | ownerScene=0x{:02x} ownerRoom={}", 
+                        myScene, myRoom, client.sceneNum, client.curRoomNum);
+        } else {
+            SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=false | scene=0x{:02x} room={} | ownerScene=0x{:02x} ownerRoom={}", 
+                        myScene, myRoom, client.sceneNum, client.curRoomNum);
+        }
+        return ownerHere;
     }
+    SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=false | no owner found");
     return false;
 }
 
