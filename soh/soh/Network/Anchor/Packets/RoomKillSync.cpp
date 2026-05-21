@@ -88,9 +88,11 @@ void Anchor::HandlePacket_RoomKillSync(nlohmann::json payload) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
             while (actor != nullptr) {
                 Actor* next = actor->next; // cache before potential invalidation
-                if (actor->colChkInfo.health > 0 &&
-                    GetActorKey(actor, sceneNum) == actorKey)
+                if (GetActorKey(actor, sceneNum) == actorKey)
                 {
+                    // Kill regardless of current health. Some enemies can sit at
+                    // health==0 for a while before calling Actor_Kill themselves.
+                    // ROOM_KILL_SYNC is an authoritative "remove now" signal.
                     actor->colChkInfo.health = 0;
                     Actor_Kill(actor);
                     found = true;
