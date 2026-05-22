@@ -222,16 +222,6 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                              "of this setting."))) {
         anchor->SendPacket_UpdateRoomState();
     }
-    if (UIWidgets::CVarCheckbox("Sync Day/Night Cycle", CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"),
-                                UIWidgets::CheckboxOptions()
-                                    .DefaultValue(false)
-                                    .Color(THEME_COLOR)
-                                    .Tooltip("When enabled, the host broadcasts the current time of day to all "
-                                             "clients every 3 seconds.\n\n"
-                                             "If either player is in an indoor scene or dungeon (where time "
-                                             "normally stands still), time is frozen globally for both players."))) {
-        anchor->SendPacket_UpdateRoomState();
-    }
 
     ImGui::Spacing();
     ImGui::SeparatorText("Enemy Sync");
@@ -294,11 +284,35 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                              "When OFF: items and flags are applied instantly (default)."))) {
         anchor->SendPacket_UpdateRoomState();
     }
+}
+
+void AnchorGameModesMenu(WidgetInfo& info) {
+    auto anchor = Anchor::Instance;
+    bool isGlobalRoom = (std::string("soh-global") == CVarGetString(CVAR_REMOTE_ANCHOR("RoomId"), ""));
+
+    if (!anchor->isEnabled || !anchor->isConnected || anchor->roomState.ownerClientId != anchor->ownClientId ||
+        isGlobalRoom) {
+        return;
+    }
+
+    ImGui::SeparatorText("Game Modes (Admin Only)");
+
+    if (UIWidgets::CVarCheckbox("Sync Day/Night Cycle", CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(false)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("When enabled, the host broadcasts the current time of day to all "
+                                             "clients every 3 seconds.\n\n"
+                                             "If either player is in an indoor scene or dungeon (where time "
+                                             "normally stands still), time is frozen globally for both players."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
 
     ImGui::Spacing();
     ImGui::SeparatorText("Cutscene Sync");
 
     // Cutscene Sync requires Enemy Sync to be active (shares its radius/room infrastructure).
+    bool enemySyncOn = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"), 0) != 0;
     ImGui::BeginDisabled(!enemySyncOn);
     if (!enemySyncOn) {
         UIWidgets::Tooltip("Requires Enemy Sync to be enabled first.");
@@ -316,6 +330,11 @@ void AnchorAdminMenu(WidgetInfo& info) {
     }
 
     ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Planned Game Modes");
+    ImGui::TextWrapped("Battle Royale, Event Sync, Minigames, Wanted/NPC escalation and other mode-specific "
+                       "systems will live on this page so the core Anchor network tab stays readable.");
 }
 
 void AnchorInstructionsMenu(WidgetInfo& info) {
@@ -357,6 +376,10 @@ void RegisterAnchorMenu() {
     path.column = SECTION_COLUMN_2;
     SohGui::mSohMenu->AddWidget(path, "AnchorAdminMenu", WIDGET_CUSTOM)
         .CustomFunction(AnchorAdminMenu)
+        .HideInSearch(true);
+    WidgetPath gameModesPath = { "Network", "Game Modes", SECTION_COLUMN_1 };
+    SohGui::mSohMenu->AddWidget(gameModesPath, "AnchorGameModesMenu", WIDGET_CUSTOM)
+        .CustomFunction(AnchorGameModesMenu)
         .HideInSearch(true);
     SohGui::mSohMenu->AddWidget(path, "AnchorInstructionsMenu", WIDGET_CUSTOM)
         .CustomFunction(AnchorInstructionsMenu)
