@@ -18,13 +18,15 @@ bool IsWithinSyncRadiusOfLocalPlayer(const Vec3f& pos, u16 syncRadius) {
         return true;
     }
 
-    Player* localLink = GET_PLAYER(gPlayState);
+    Player* localLink = (Player*)gPlayState->actorCtx.actorLists[ACTORCAT_PLAYER].head;
     if (localLink == nullptr) {
         return true;
     }
 
+    Vec3f posMutable = pos;
+    Vec3f playerPos = localLink->actor.world.pos;
     f32 rSq = (f32)syncRadius * (f32)syncRadius;
-    return Math3D_Vec3fDistSq(&pos, &localLink->actor.world.pos) <= rSq;
+    return Math3D_Vec3fDistSq(&posMutable, &playerPos) <= rSq;
 }
 } // namespace
 
