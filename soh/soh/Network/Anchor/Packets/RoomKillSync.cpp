@@ -48,6 +48,7 @@ Actor* FindClosestActorOfTypeInRoom(s16 sceneNum, s8 roomNum, s16 actorId, const
     Actor* best = nullptr;
     f32 bestDistSq = std::numeric_limits<f32>::max();
     f32 maxDistSq = radius * radius;
+    Vec3f approxPosMutable = approxPos;
 
     for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
         Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
@@ -63,7 +64,7 @@ Actor* FindClosestActorOfTypeInRoom(s16 sceneNum, s8 roomNum, s16 actorId, const
                 continue;
             }
 
-            f32 distSq = Math3D_Vec3fDistSq(&actor->home.pos, &approxPos);
+            f32 distSq = Math3D_Vec3fDistSq(&actor->home.pos, &approxPosMutable);
             if (distSq <= maxDistSq && distSq < bestDistSq) {
                 best = actor;
                 bestDistSq = distSq;

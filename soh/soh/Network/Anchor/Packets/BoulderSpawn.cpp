@@ -12,12 +12,27 @@ namespace {
 bool IsRollingBoulderActor(s16 actorId) {
     return actorId == ACTOR_EN_BW || actorId == ACTOR_EN_GOROIWA;
 }
+
+bool IsWithinSyncRadiusOfLocalPlayer(const Vec3f& pos, u16 syncRadius) {
+    if (!gPlayState || syncRadius == 0) {
+        return true;
+    }
+
+    Player* localLink = GET_PLAYER(gPlayState);
+    if (localLink == nullptr) {
+        return true;
+    }
+
+    f32 rSq = (f32)syncRadius * (f32)syncRadius;
+    return Math3D_Vec3fDistSq(&pos, &localLink->actor.world.pos) <= rSq;
+}
 } // namespace
 
 void Anchor::SendPacket_BoulderSpawn(const Actor* actor) {
     if (!IsSaveLoaded() || !gPlayState || actor == nullptr) return;
     if (!roomState.syncEnemies) return;
     if (!IsRollingBoulderActor(actor->id)) return;
+    if (!IsWithinSyncRadiusOfLocalPlayer(actor->world.pos, roomState.syncRadius)) return;
 
     nlohmann::json payload;
     payload["type"] = BOULDER_SPAWN;
@@ -71,6 +86,12 @@ void Anchor::HandlePacket_BoulderSpawn(nlohmann::json payload) {
     f32 posX = payload.value("posX", 0.0f);
     f32 posY = payload.value("posY", 0.0f);
     f32 posZ = payload.value("posZ", 0.0f);
+    Vec3f remotePos = { posX, posY, posZ };
+    if (!IsWithinSyncRadiusOfLocalPlayer(remotePos, roomState.syncRadius)) {
+        // Outside enemy sync radius: keep local vanilla trigger behavior.
+        return;
+    }
+
     s16 rotX = (s16)payload.value("rotX", 0);
     s16 rotY = (s16)payload.value("rotY", 0);
     s16 rotZ = (s16)payload.value("rotZ", 0);
