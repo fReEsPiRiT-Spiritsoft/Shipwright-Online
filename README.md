@@ -149,7 +149,7 @@ If you want to playtest a continuous integration build, you can find them at the
 
 ### Further Reading
 More detailed documentation can be found in the 'docs' directory, including the aforementioned [building instructions](docs/BUILDING.md).
-#
+
 * [Credits](docs/CREDITS.md)
 * [Custom Music](docs/CUSTOM_MUSIC.md)
 * [Controller Mapping](docs/GAME_CONTROLLER_DB.md)
