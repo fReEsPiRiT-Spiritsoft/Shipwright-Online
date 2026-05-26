@@ -1,4 +1,4 @@
-name: generate-builds-v2
+name: generate-builds
 on:
   push:
   pull_request:
