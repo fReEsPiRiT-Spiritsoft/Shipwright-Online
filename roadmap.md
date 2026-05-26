@@ -278,3 +278,6 @@ Ziel: Jede neue Stufe wird erst dann als fertig markiert, wenn sie auf Linux und
 
 ### Offene Designentscheidung
 - Der sauberste Pfad ist, den globalen Host weiter als Save-/Lobby-Autoritaet zu behandeln und den Raum-Master als lokale, per Raum wechselnde Gameplay-Autoritaet einzufuehren. Das verhindert, dass globale und lokale Wahrheit vermischt werden.
+
+
+fertig
