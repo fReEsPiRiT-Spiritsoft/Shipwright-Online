@@ -1506,21 +1506,29 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
         if (!roomState.battleRoyaleMode) return;
 
-        static const char* const kBrBlockedCheats[] = {
-            CVAR_CHEAT("InfiniteHealth"),
-            CVAR_CHEAT("InfiniteAmmo"),
-            CVAR_CHEAT("InfiniteMagic"),
-            CVAR_CHEAT("InfiniteNayru"),
-            CVAR_CHEAT("InfiniteMoney"),
-            CVAR_CHEAT("MoonJumpOnL"),
-            CVAR_CHEAT("NoRestrictItems"),
-            CVAR_CHEAT("DekuStick"),
-        };
-
-        for (const char* cvar : kBrBlockedCheats) {
-            if (CVarGetInteger(cvar, 0) != 0) {
-                CVarSetInteger(cvar, 0);
-            }
+        if (CVarGetInteger(CVAR_CHEAT("InfiniteHealth"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("InfiniteHealth"), 0);
+        }
+        if (CVarGetInteger(CVAR_CHEAT("InfiniteAmmo"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("InfiniteAmmo"), 0);
+        }
+        if (CVarGetInteger(CVAR_CHEAT("InfiniteMagic"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("InfiniteMagic"), 0);
+        }
+        if (CVarGetInteger(CVAR_CHEAT("InfiniteNayru"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("InfiniteNayru"), 0);
+        }
+        if (CVarGetInteger(CVAR_CHEAT("InfiniteMoney"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("InfiniteMoney"), 0);
+        }
+        if (CVarGetInteger(CVAR_CHEAT("MoonJumpOnL"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("MoonJumpOnL"), 0);
+        }
+        if (CVarGetInteger(CVAR_CHEAT("NoRestrictItems"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("NoRestrictItems"), 0);
+        }
+        if (CVarGetInteger(CVAR_CHEAT("DekuStick"), 0) != 0) {
+            CVarSetInteger(CVAR_CHEAT("DekuStick"), 0);
         }
     });
 
