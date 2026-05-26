@@ -1,5 +1,9 @@
 > 🇩🇪 [Deutsche Version / German version](README_DE.md)
 
+<a href="features.md">
+  <img src="https://img.shields.io/badge/Alle%20Features-features.md-orange?style=for-the-badge&logo=readme" alt="Alle Features">
+</a>
+
 ### 📥 Downloads
 
 <a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases/tag/0.1.1">
