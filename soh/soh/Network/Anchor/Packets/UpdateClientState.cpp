@@ -27,6 +27,7 @@ nlohmann::json Anchor::PrepClientState() {
     payload["clientVersion"] = clientVersion;
     payload["teamId"] = CVarGetString(CVAR_REMOTE_ANCHOR("TeamId"), "default");
     payload["online"] = true;
+    payload["pingMs"]  = ownPingMs; // UINT32_MAX until first PONG received
 
     if (IsSaveLoaded()) {
         payload["seed"] = IS_RANDO ? Rando::Context::GetInstance()->GetSeed() : 0;
@@ -74,5 +75,6 @@ void Anchor::HandlePacket_UpdateClientState(nlohmann::json payload) {
         clients[clientId].curRoomNum = client.curRoomNum;
         clients[clientId].entranceIndex = client.entranceIndex;
         clients[clientId].timeIncrement = client.timeIncrement;
+        clients[clientId].pingMs        = payload["state"].value("pingMs", (uint32_t)UINT32_MAX);
     }
 }

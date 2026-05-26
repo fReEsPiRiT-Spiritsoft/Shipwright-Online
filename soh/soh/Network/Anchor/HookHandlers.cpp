@@ -139,6 +139,20 @@ void Anchor::RegisterHooks() {
 
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() { ProcessIncomingPacketQueue(); });
 
+    // Periodic PING broadcast for RTT measurement and host-election grace-period timer.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        const auto now = Clock::now();
+        // Send PING every PING_INTERVAL (5 s) to all peers.
+        if (lastPingSentAt == Clock::time_point{} ||
+            (now - lastPingSentAt) >= PING_INTERVAL) {
+            SendPacket_Ping();
+        }
+        // If the grace-period countdown is active, check for expiry.
+        if (hostElectionArmed) {
+            ElectNewHostIfNeeded();
+        }
+    });
+
     COND_HOOK(OnPlayerSfx, isConnected, [&](u16 sfxId) { SendPacket_PlayerSfx(sfxId); });
     COND_HOOK(OnOcarinaNote, isConnected,
               [&](uint8_t note, float modulator, int8_t bend) { SendPacket_OcarinaSfx(note, modulator, bend); });

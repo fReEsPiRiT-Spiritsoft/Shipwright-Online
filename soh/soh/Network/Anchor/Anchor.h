@@ -66,6 +66,11 @@ struct AnchorClient {
     Player* player;
     // > 0 while playing the throw animation on the dummy (giver animation override).
     s32 giverAnimTimer = 0;
+
+    // Reported one-way latency in ms from the remote client's own PING/PONG
+    // measurement.  Included in UPDATE_CLIENT_STATE.  UINT32_MAX = unknown (no
+    // measurement yet).  Used for host-election ordering.
+    uint32_t pingMs = UINT32_MAX;
 };
 
 typedef struct {
@@ -172,6 +177,26 @@ class Anchor : public Network {
     // Both sides: set to true while HandlePacket_BoulderSpawn spawns a rolling
     // boulder so the local OnActorSpawn hook does not echo it back.
     bool isSpawningRemoteBoulder = false;
+
+    // ── Host-Election ────────────────────────────────────────────────────────
+    // When the current room owner disconnects, all clients independently elect
+    // the online peer with the lowest measured ping (ties broken by lowest
+    // clientId).  A 3-second grace period avoids flapping on brief reconnects.
+    Clock::time_point hostOfflineSince  = {};
+    bool              hostElectionArmed = false;
+    static constexpr auto HOST_ELECTION_GRACE = std::chrono::milliseconds(3000);
+
+    // ── Ping measurement (PING / PONG) ───────────────────────────────────────
+    // Each client broadcasts a PING every ~5 s.  Recipients reply with PONG.
+    // The original sender measures RTT and keeps an EMA of one-way latency.
+    // The result is broadcast in UPDATE_CLIENT_STATE so every peer has a
+    // complete global ping table for election ordering.
+    uint32_t                           ownPingMs     = UINT32_MAX;
+    uint32_t                           pingSeq       = 0;
+    std::unordered_map<uint32_t,
+        Clock::time_point>             pendingPingAt; // seq → send time
+    Clock::time_point                  lastPingSentAt = {};
+    static constexpr auto              PING_INTERVAL  = std::chrono::milliseconds(5000);
     // Battle Royale: last PvP attacker that hit the local player.
     // Set in HandlePacket_DamagePlayer; read by the BR death-detection hook in
     // OnGameFrameUpdate.  Reset to 0 after a PLAYER_KILLED event is sent, and
@@ -260,6 +285,8 @@ class Anchor : public Network {
 
     static std::string GetActorKey(const Actor* actor, s16 sceneNum);
 
+    void HandlePacket_Ping(nlohmann::json payload);
+    void HandlePacket_Pong(nlohmann::json payload);
     void HandlePacket_ItemPickup(nlohmann::json payload);
     void HandlePacket_EnemyDropItem(nlohmann::json payload);
     void SendPacket_EnemyDropItem(s16 params, float x, float y, float z);
@@ -301,6 +328,21 @@ class Anchor : public Network {
     void HandlePacket_RoomJoin(nlohmann::json payload);
     void HandlePacket_RoomMasterAssign(nlohmann::json payload);
     void HandlePacket_RoomSnapshot(nlohmann::json payload);
+
+  public:
+    // ── Host-election / Ping – public API ────────────────────────────────────
+    // Called every ~5 s from OnGameFrameUpdate; broadcasts a PING to all peers.
+    void SendPacket_Ping();
+    // Checks whether the current room owner is still online and, if not, runs
+    // a deterministic election (lowest ping, tie-break by lowest clientId).
+    // Must be called both from HandlePacket_AllClientState and periodically
+    // from OnGameFrameUpdate (for the grace-period expiry check).
+    void ElectNewHostIfNeeded();
+    // Returns the clientId of the best host candidate among all online clients
+    // (including self).  Prefers lowest pingMs; breaks ties by lowest clientId.
+    uint32_t PickBestHostCandidateId() const;
+
+  private:
 
   public:
     // Phantom horse map: clientId → Actor* in current scene (AI-silent En_Horse_Normal).
@@ -350,6 +392,8 @@ class Anchor : public Network {
     inline static const std::string ROOM_SNAPSHOT       = "ROOM_SNAPSHOT";
     inline static const std::string ROOM_EVENT          = "ROOM_EVENT";
     inline static const std::string BATTLE_ROYALE_EVENT = "BATTLE_ROYALE_EVENT";
+    inline static const std::string PING                = "PING";
+    inline static const std::string PONG                = "PONG";
 
     static Anchor* Instance;
     std::map<uint32_t, AnchorClient> clients;

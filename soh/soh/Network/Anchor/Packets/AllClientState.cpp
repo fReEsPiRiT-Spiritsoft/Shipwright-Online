@@ -69,5 +69,10 @@ void Anchor::HandlePacket_AllClientState(nlohmann::json payload) {
         clients.erase(clientId);
     }
 
+    // Host migration: check if current owner is still online and elect a new
+    // one if not.  Called here because ALL_CLIENT_STATE is the primary signal
+    // that a client connected or disconnected.
+    ElectNewHostIfNeeded();
+
     shouldRefreshActors = true;
 }

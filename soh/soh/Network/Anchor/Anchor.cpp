@@ -202,6 +202,10 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_RoomSnapshot(payload);
             else if (packetType == ROOM_EVENT)
                 HandlePacket_RoomEvent(payload);
+            else if (packetType == PING)
+                HandlePacket_Ping(payload);
+            else if (packetType == PONG)
+                HandlePacket_Pong(payload);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("[Anchor] Exception while processing incoming packet {}", e.what());
             SPDLOG_ERROR("[Anchor] Packet: {}", payload.dump());
