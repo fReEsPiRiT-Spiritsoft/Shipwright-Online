@@ -2,7 +2,6 @@
 #include <nlohmann/json.hpp>
 #include <libultraship/libultraship.h>
 #include "soh/Notification/Notification.h"
-#include <imgui/imgui.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PING / PONG  —  round-trip latency measurement
