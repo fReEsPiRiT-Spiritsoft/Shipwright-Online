@@ -239,11 +239,8 @@ class Anchor : public Network {
     // every frame from the received rider position.  Cleared on scene change.
     //
     // Key: clientId  Value: pointer to the phantom horse Actor in the current scene
-    std::unordered_map<uint32_t, Actor*> clientPhantomHorse;
-
-    // Saddle-height offset: distance (in OoT world units) from the horse actor's
-    // world.pos (ground level) to the rider's hip/seat attachment point.
-    static constexpr float PHANTOM_HORSE_SADDLE_HEIGHT = 76.0f;
+    // (moved to public so DummyPlayer.cpp can access it directly)
+    // PHANTOM_HORSE_SADDLE_HEIGHT also moved to public for the same reason.
     // (either player is in a timeless scene).  Client uses this to suppress local dayTime
     // advancement between sync packets.
     bool remoteTimeFrozen = false;
@@ -306,6 +303,11 @@ class Anchor : public Network {
     void HandlePacket_RoomSnapshot(nlohmann::json payload);
 
   public:
+    // Phantom horse map: clientId → Actor* in current scene (AI-silent En_Horse_Normal).
+    std::unordered_map<uint32_t, Actor*> clientPhantomHorse;
+    // Distance from horse world.pos (ground) to rider's seat attachment.
+    static constexpr float PHANTOM_HORSE_SADDLE_HEIGHT = 76.0f;
+
     uint32_t ownClientId;
     inline static const std::string clientVersion = (char*)gGitCommitHash;
 

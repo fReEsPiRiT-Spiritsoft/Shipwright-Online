@@ -290,7 +290,8 @@ bool Anchor::IsActorInsideSyncRadius(const Actor* actor) {
     Player* localLink = GET_PLAYER(gPlayState);
     if (!localLink) return true;
     const f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
-    return Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) <= rSq;
+    // Cast away const: Math3D_Vec3fDistSq takes non-const Vec3f* but does not modify.
+    return Math3D_Vec3fDistSq(const_cast<Vec3f*>(&actor->world.pos), &localLink->actor.world.pos) <= rSq;
 }
 
 /**
