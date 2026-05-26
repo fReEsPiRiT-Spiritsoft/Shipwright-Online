@@ -15,7 +15,7 @@ jobs:
       with:
         submodules: true
     - name: Configure ccache
-      uses: hendrikmuhs/ccache-action@v1
+      uses: hendrikmuhs/ccache-action@v1.2.22
       with:
         save: ${{ github.ref_name == github.event.repository.default_branch }}
         key: ${{ runner.os }}-otr-ccache-${{ github.ref }}-${{ github.sha }}
@@ -50,7 +50,7 @@ jobs:
         sudo cp -av /usr/local/lib/libSDL* /lib/x86_64-linux-gnu/
     - name: Install latest tinyxml2
       run: |
-        sudo apt-get remove libtinyxml2-dev
+        sudo apt-get remove -y libtinyxml2-dev
         export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
         if [ ! -d "deps/tinyxml2-10.0.0" ]; then
           wget https://github.com/leethomason/tinyxml2/archive/refs/tags/10.0.0.tar.gz
@@ -119,7 +119,7 @@ jobs:
         echo "/opt/local/bin:/opt/local/sbin" >> "$GITHUB_PATH"
     - name: Install dependencies
       run: |
-        brew uninstall --ignore-dependencies libpng
+        brew uninstall --ignore-dependencies libpng || true
         sudo port install $(cat .github/workflows/macports-deps.txt)
         brew install ninja
     - name: Download soh.o2r
@@ -207,7 +207,7 @@ jobs:
         sudo cp -av /usr/local/lib/libSDL* /lib/x86_64-linux-gnu/
     - name: Install latest tinyxml2
       run: |
-        sudo apt-get remove libtinyxml2-dev
+        sudo apt-get remove -y libtinyxml2-dev
         export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
         if [ ! -d "deps/tinyxml2-10.0.0" ]; then
           wget https://github.com/leethomason/tinyxml2/archive/refs/tags/10.0.0.tar.gz
@@ -312,7 +312,6 @@ jobs:
         cmake --build build-windows --config Release --parallel 10
 
         (cd build-windows && cpack)
-        cd ..
         mv _packages/*.zip _packages/soh-windows.zip
     - name: Unzip package
       run: Expand-Archive -Path _packages/soh-windows.zip -DestinationPath soh-windows
