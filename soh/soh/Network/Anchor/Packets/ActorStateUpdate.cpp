@@ -40,7 +40,7 @@ std::string Anchor::GetActorKey(const Actor* actor, s16 sceneNum) {
 }
 
 bool Anchor::IsEnemyAuthority() {
-    return isConnected && ownClientId != 0 && ownClientId == roomState.ownerClientId;
+    return IsRoomMaster();
 }
 
 void Anchor::SendPacket_ActorStateUpdate(const Actor* actor) {

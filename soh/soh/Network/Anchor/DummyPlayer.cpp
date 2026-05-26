@@ -177,6 +177,68 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
         gSaveContext.equips.buttonItems[0] = originalButtonItem0;
     }
 
+    // ── Phase 6: Phantom horse ────────────────────────────────────────────────
+    // When the remote player has PLAYER_STATE1_ON_HORSE we need a visible horse
+    // under them.  In OoT, Link's world.pos while mounted is at saddle height
+    // (≈ PHANTOM_HORSE_SADDLE_HEIGHT units above ground), so the phantom horse is
+    // placed at  rider.pos.y − PHANTOM_HORSE_SADDLE_HEIGHT.
+    //
+    // We use En_Horse_Normal (pasture horse) because it has minimal scripting.
+    // Its update function is cleared → KI-silent; position is set every frame.
+    // The horse is killed when the rider dismounts or their scene diverges.
+    {
+        const bool riderInScene = (client.sceneNum == gPlayState->sceneNum &&
+                                   client.online && client.isSaveLoaded);
+        const bool isOnHorse    = (player->stateFlags1 & PLAYER_STATE1_ON_HORSE) != 0;
+        const bool horseSyncOn  = Anchor::Instance->roomState.syncEpona != 0;
+        auto& horseMap = Anchor::Instance->clientPhantomHorse;
+
+        if (riderInScene && isOnHorse && horseSyncOn) {
+            Actor* phantom = horseMap.count(clientId) ? horseMap[clientId] : nullptr;
+
+            if (!phantom) {
+                // First frame of this client being on a horse — spawn the phantom.
+                Vec3f spawnPos = actor->world.pos;
+                spawnPos.y -= Anchor::PHANTOM_HORSE_SADDLE_HEIGHT;
+                phantom = Actor_Spawn(&gPlayState->actorCtx, gPlayState,
+                                      ACTOR_EN_HORSE_NORMAL,
+                                      spawnPos.x, spawnPos.y, spawnPos.z,
+                                      0, actor->shape.rot.y, 0,
+                                      /*params=*/0);
+                if (phantom) {
+                    // Silence AI completely — we drive the position ourselves.
+                    phantom->update = nullptr;
+                    // Persistent across room-boundary draws (same as DummyPlayer).
+                    phantom->room   = -1;
+                    SPDLOG_INFO("[Anchor:Horse] Spawned phantom horse for client {} (actor={})",
+                                clientId, (void*)phantom);
+                }
+                // Store even if null so we don't re-attempt every frame.
+                horseMap[clientId] = phantom;
+            }
+
+            if (phantom) {
+                // Drive position every frame to follow the rider.
+                phantom->world.pos.x = actor->world.pos.x;
+                phantom->world.pos.y = actor->world.pos.y - Anchor::PHANTOM_HORSE_SADDLE_HEIGHT;
+                phantom->world.pos.z = actor->world.pos.z;
+                phantom->world.rot.y = actor->shape.rot.y;
+                phantom->shape.rot.y = actor->shape.rot.y;
+            }
+        } else {
+            // Rider dismounted or left scene — remove phantom.
+            auto it = horseMap.find(clientId);
+            if (it != horseMap.end()) {
+                if (it->second) {
+                    Actor_Kill(it->second);
+                    SPDLOG_INFO("[Anchor:Horse] Killed phantom horse for client {}", clientId);
+                }
+                horseMap.erase(it);
+            }
+        }
+    }
+    // ── end phantom horse ─────────────────────────────────────────────────────
+
     if (Anchor::Instance->roomState.pvpMode == 0 ||
         (Anchor::Instance->roomState.pvpMode == 1 &&
          client.teamId == CVarGetString(CVAR_REMOTE_ANCHOR("TeamId"), "default"))) {
@@ -187,8 +249,15 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
     actor->flags &= ~ACTOR_FLAG_LOCK_ON_DISABLED;
 
     if (player->cylinder.base.acFlags & AC_HIT && player->invincibilityTimer == 0) {
-        Anchor::Instance->SendPacket_DamagePlayer(client.clientId, player->actor.colChkInfo.damageEffect,
-                                                  player->actor.colChkInfo.damage);
+        // BR: Wenn der lokale Spieler gerade tot/respawnend ist (brEliminated),
+        // keinen Schaden senden.  Startschutz und Respawn-Schutz via brStartProtectionUntil.
+        const bool senderElim   = Anchor::Instance->brEliminated;
+        const bool startProtect = Anchor::Instance->roomState.battleRoyaleMode &&
+                                  (std::chrono::steady_clock::now() < Anchor::Instance->brStartProtectionUntil);
+        if (!senderElim && !startProtect) {
+            Anchor::Instance->SendPacket_DamagePlayer(client.clientId, player->actor.colChkInfo.damageEffect,
+                                                      player->actor.colChkInfo.damage);
+        }
         if (player->actor.colChkInfo.damageEffect == DUMMY_PLAYER_HIT_RESPONSE_STUN) {
             Actor_SetColorFilter(&player->actor, 0, 0xFF, 0, 24);
         } else {
@@ -251,6 +320,16 @@ void DummyPlayer_Draw(Actor* actor, PlayState* play) {
 }
 
 void DummyPlayer_Destroy(Actor* actor, PlayState* play) {
+    // Kill any phantom horse that was tracking this dummy player.
+    uint32_t clientId = Anchor::Instance->GetDummyPlayerClientId(actor);
+    if (Anchor::Instance->clientPhantomHorse.count(clientId)) {
+        Actor* horse = Anchor::Instance->clientPhantomHorse[clientId];
+        if (horse) {
+            Actor_Kill(horse);
+        }
+        Anchor::Instance->clientPhantomHorse.erase(clientId);
+    }
+
     // DummyPlayer Actors are initially spawned as ACTOR_PLAYER, but change their
     // ID shortly afterwards to ACTOR_EN_OE2. This would cause ACTOR_PLAYER's
     // ActorDB Entry's `numLoaded` to leak, which is mostly harmless but hits debug

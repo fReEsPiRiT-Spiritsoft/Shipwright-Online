@@ -51,19 +51,28 @@ bool Anchor::IsOwnerInSameRoom() const {
     if (!gPlayState) return false;
     s16 myScene = gPlayState->sceneNum;
     s8  myRoom  = (s8)gPlayState->roomCtx.curRoom.num;
-    for (auto& [id, client] : clients) {
-        if (id != roomState.ownerClientId) continue;
-        bool ownerHere = client.sceneNum == myScene && client.curRoomNum == myRoom;
-        if (ownerHere) {
-            SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=true | scene=0x{:02x} room={} | ownerScene=0x{:02x} ownerRoom={}", 
-                        myScene, myRoom, client.sceneNum, client.curRoomNum);
-        } else {
-            SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=false | scene=0x{:02x} room={} | ownerScene=0x{:02x} ownerRoom={}", 
-                        myScene, myRoom, client.sceneNum, client.curRoomNum);
-        }
-        return ownerHere;
+
+    // Use the explicitly assigned room master if available; fall back to global owner.
+    const std::string key = BuildRoomKey(myScene, myRoom);
+    uint32_t masterClientId = roomState.ownerClientId;
+    auto it = roomAuthority.find(key);
+    if (it != roomAuthority.end() && it->second != 0) {
+        masterClientId = it->second;
     }
-    SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=false | no owner found");
+
+    for (auto& [id, client] : clients) {
+        if (id != masterClientId) continue;
+        bool masterHere = client.sceneNum == myScene && client.curRoomNum == myRoom;
+        if (masterHere) {
+            SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=true | scene=0x{:02x} room={} | masterScene=0x{:02x} masterRoom={}",
+                         myScene, myRoom, client.sceneNum, client.curRoomNum);
+        } else {
+            SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=false | scene=0x{:02x} room={} | masterScene=0x{:02x} masterRoom={}",
+                         myScene, myRoom, client.sceneNum, client.curRoomNum);
+        }
+        return masterHere;
+    }
+    SPDLOG_DEBUG("[Anchor:EnemySync] CLIENT: IsOwnerInSameRoom=false | no master found");
     return false;
 }
 
@@ -73,16 +82,19 @@ void Anchor::SendPacket_EnemyPositionUpdate(const Actor* actor) {
     if (!IsSaveLoaded()) return;
 
     nlohmann::json payload;
-    payload["type"]     = ENEMY_POSITION_UPDATE;
-    payload["quiet"]    = true; // suppress per-packet debug spam
-    payload["sceneNum"] = gPlayState->sceneNum;
-    payload["actorKey"] = GetActorKey(actor, gPlayState->sceneNum);
-    payload["posX"]     = actor->world.pos.x;
-    payload["posY"]     = actor->world.pos.y;
-    payload["posZ"]     = actor->world.pos.z;
-    payload["rotY"]     = (int)actor->world.rot.y;
-    payload["shapeRotY"] = (int)actor->shape.rot.y;
-    payload["health"]   = actor->colChkInfo.health;
+    payload["type"]        = ENEMY_POSITION_UPDATE;
+    payload["quiet"]       = true; // suppress per-packet debug spam
+    payload["sceneNum"]    = gPlayState->sceneNum;
+    payload["actorKey"]    = GetActorKey(actor, gPlayState->sceneNum);
+    payload["posX"]        = actor->world.pos.x;
+    payload["posY"]        = actor->world.pos.y;
+    payload["posZ"]        = actor->world.pos.z;
+    payload["rotY"]        = (int)actor->world.rot.y;
+    payload["shapeRotY"]   = (int)actor->shape.rot.y;
+    payload["health"]      = actor->colChkInfo.health;
+    // Draw state: false means actor->draw == nullptr (enemy is hidden, e.g. Deku Scrub underground).
+    // The client uses this to suppress rendering without touching AI-controlled function pointers.
+    payload["drawEnabled"] = (actor->draw != nullptr);
 
     SendJsonToRemote(payload);
 }
@@ -96,13 +108,15 @@ void Anchor::HandlePacket_EnemyPositionUpdate(nlohmann::json payload) {
     s16 sceneNum = payload.value("sceneNum", (s16)SCENE_ID_MAX);
     if (sceneNum != gPlayState->sceneNum) return;
 
-    std::string actorKey = payload["actorKey"].get<std::string>();
-    float posX = payload.value("posX", 0.0f);
-    float posY = payload.value("posY", 0.0f);
-    float posZ = payload.value("posZ", 0.0f);
-    s16   rotY = (s16)payload.value("rotY", 0);
-    s16 shapeRotY = (s16)payload.value("shapeRotY", (int)rotY);
-    u8  health = payload.value("health", (u8)1);
+    std::string actorKey  = payload["actorKey"].get<std::string>();
+    float posX            = payload.value("posX", 0.0f);
+    float posY            = payload.value("posY", 0.0f);
+    float posZ            = payload.value("posZ", 0.0f);
+    s16   rotY            = (s16)payload.value("rotY", 0);
+    s16   shapeRotY       = (s16)payload.value("shapeRotY", (int)rotY);
+    u8    health          = payload.value("health", (u8)1);
+    // Backward-compatible: old servers don't send drawEnabled; treat as visible.
+    bool  drawEnabled     = payload.value("drawEnabled", true);
 
     for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
         Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
@@ -119,6 +133,26 @@ void Anchor::HandlePacket_EnemyPositionUpdate(nlohmann::json payload) {
                     actor->colChkInfo.health = health;
                     pendingRemoteHealthOverride[actorKey] = health;
                 }
+
+                // ── Draw-state override (Phase 4) ────────────────────────────
+                // When the room master hides an enemy (e.g. Deku Scrub going underground),
+                // suppress rendering on the client by nulling the draw pointer.
+                // Restore the saved function when the enemy reappears.
+                if (!drawEnabled) {
+                    // Save original draw function before we hide it (once only).
+                    if (actor->draw != nullptr) {
+                        savedEnemyDrawFuncs[actorKey] = actor->draw;
+                        actor->draw = nullptr;
+                    }
+                } else {
+                    // Restore draw function if we previously suppressed it.
+                    auto savedIt = savedEnemyDrawFuncs.find(actorKey);
+                    if (savedIt != savedEnemyDrawFuncs.end()) {
+                        actor->draw = savedIt->second;
+                        savedEnemyDrawFuncs.erase(savedIt);
+                    }
+                }
+
                 return;
             }
             actor = actor->next;

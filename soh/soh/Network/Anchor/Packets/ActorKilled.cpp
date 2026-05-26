@@ -47,7 +47,9 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
     if (sceneNum != gPlayState->sceneNum) return;
 
     std::string actorKey = payload["actorKey"].get<std::string>();
-    SPDLOG_INFO("[Anchor:EnemySync] CLIENT: ACTOR_KILLED recv | actorKey={} | scene=0x{:02x}", actorKey, sceneNum);
+    int receivedCategory = payload.value("actorCategory", (int)ACTORCAT_ENEMY);
+    SPDLOG_INFO("[Anchor:ActorSync] CLIENT: ACTOR_KILLED recv | actorKey={} | category={} | scene=0x{:02x}",
+                actorKey, receivedCategory, sceneNum);
 
     // Confirmation path for ROOM_KILL_SYNC retries:
     // when authority confirms a kill, drop this key from all pending room sets.
@@ -60,23 +62,39 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
         }
     }
 
-    for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+    // Determine which actor category lists to scan.
+    // Phase 5: extend to BG/PROP in addition to the original ENEMY/BOSS scope.
+    bool isBgKill     = (receivedCategory == ACTORCAT_BG || receivedCategory == ACTORCAT_PROP);
+    bool isEnemyKill  = (receivedCategory == ACTORCAT_ENEMY || receivedCategory == ACTORCAT_BOSS);
+
+    // Scan the matching category first; fall back to all four if category is unknown.
+    std::vector<int> catsToScan;
+    if (isEnemyKill)     catsToScan = { ACTORCAT_ENEMY, ACTORCAT_BOSS };
+    else if (isBgKill)   catsToScan = { ACTORCAT_BG,    ACTORCAT_PROP };
+    else                 catsToScan = { ACTORCAT_ENEMY, ACTORCAT_BOSS, ACTORCAT_BG, ACTORCAT_PROP };
+
+    for (int cat : catsToScan) {
         Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
         while (actor != nullptr) {
-            Actor* next = actor->next; // cache next before potential Actor_Kill invalidates pointers
+            Actor* next = actor->next; // cache before potential Actor_Kill invalidates pointers
             if (GetActorKey(actor, sceneNum) == actorKey) {
-                // Always kill the actor, regardless of its current health value.
-                // EnemyPositionUpdate may have already set health to 0 while
-                // syncing the falling animation; we must still remove the actor
-                // when the authoritative kill signal arrives.
-                actor->colChkInfo.health = 0;
+                if (isEnemyKill) {
+                    // Always zero health before kill so the actor leaves the correct
+                    // drop state, even if EnemyPositionUpdate already set it to 0.
+                    actor->colChkInfo.health = 0;
+                }
                 Actor_Kill(actor);
-                SPDLOG_INFO("[Anchor:EnemySync] CLIENT: ACTOR_KILLED applied | actorKey={}", actorKey);
+                // Clean up client-side BG tracking entries for dead actors.
+                if (isBgKill) {
+                    bgActorKeyframeTarget.erase(actorKey);
+                }
+                SPDLOG_INFO("[Anchor:ActorSync] CLIENT: ACTOR_KILLED applied | actorKey={} | category={}", actorKey, cat);
                 return;
             }
             actor = next;
         }
     }
 
-    SPDLOG_WARN("[Anchor:EnemySync] CLIENT: ACTOR_KILLED actor not found | actorKey={} | scene=0x{:02x}", actorKey, sceneNum);
+    SPDLOG_WARN("[Anchor:ActorSync] CLIENT: ACTOR_KILLED actor not found | actorKey={} | category={} | scene=0x{:02x}",
+                actorKey, receivedCategory, sceneNum);
 }

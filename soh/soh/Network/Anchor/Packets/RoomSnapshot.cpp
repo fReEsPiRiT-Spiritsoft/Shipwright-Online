@@ -1,0 +1,313 @@
+#include "soh/Network/Anchor/Anchor.h"
+#include <nlohmann/json.hpp>
+#include <libultraship/libultraship.h>
+
+extern "C" {
+#include "variables.h"
+#include "functions.h"
+extern PlayState* gPlayState;
+}
+
+/**
+ * ROOM_SNAPSHOT
+ *
+ * One-time packet sent by the room master to a client that just entered the
+ * same scene/room.  Synchronises all enemy state so the late joiner starts with
+ * correct HP, positions, draw state, and alive/dead status instead of freshly-
+ * spawned ROM defaults.
+ *
+ * Additionally carries a "brMatchState" block so a client joining mid-match
+ * immediately knows the BR match is active, which players are eliminated, which
+ * are wanted, and how much start-protection time remains.  Without this a late
+ * joiner would see stale brMatchActive=false and could deal/receive PvP damage
+ * during the start-protection window.
+ *
+ * Fields per enemy entry:
+ *   key         – composite actorKey (scene+cat+id+room+params+homePos+homeRot)
+ *   hp          – current health
+ *   posX/Y/Z    – world position
+ *   rotY        – world Y rotation
+ *   shapeRotY   – shape (visual) Y rotation
+ *   alive       – false if Actor_Kill has already been called (update == nullptr)
+ *   drawEnabled – false if the enemy is currently hidden (draw == nullptr),
+ *                 e.g. a Deku Scrub underground
+ *
+ * Flow:
+ *   1. New client sends ROOM_JOIN.
+ *   2. Host broadcasts ROOM_MASTER_ASSIGN (with joiningClientId).
+ *   3. Room master receives it, detects joiningClientId != self, calls
+ *      SendPacket_RoomSnapshot(joiningClientId).
+ *   4. All peers receive the broadcast; only targetClientId applies it.
+ *   5. Dead actors are killed in a second pass to keep linked-list traversal safe.
+ *   6. Hidden actors' draw functions are suppressed via savedEnemyDrawFuncs so
+ *      they can be cleanly restored when the authority un-hides them.
+ */
+
+// ─── Send ─────────────────────────────────────────────────────────────────────
+
+void Anchor::SendPacket_RoomSnapshot(uint32_t targetClientId) {
+    if (!IsSaveLoaded() || !gPlayState) return;
+    if (!IsRoomMaster()) return;
+
+    const s16 sceneNum = gPlayState->sceneNum;
+    const s8  curRoom  = (s8)gPlayState->roomCtx.curRoom.num;
+
+    nlohmann::json enemies = nlohmann::json::array();
+
+    for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+        Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+        while (actor != nullptr) {
+            // Only include actors that belong to the current room.
+            if (actor->room == curRoom) {
+                nlohmann::json e;
+                e["key"]         = GetActorKey(actor, sceneNum);
+                e["hp"]          = (int)actor->colChkInfo.health;
+                e["posX"]        = actor->world.pos.x;
+                e["posY"]        = actor->world.pos.y;
+                e["posZ"]        = actor->world.pos.z;
+                e["rotY"]        = (int)actor->world.rot.y;
+                e["shapeRotY"]   = (int)actor->shape.rot.y;
+                // update == nullptr is the standard "dead" marker set by Actor_Kill.
+                e["alive"]       = (actor->update != nullptr);
+                // draw == nullptr means the enemy is hidden (e.g. Deku Scrub underground).
+                e["drawEnabled"] = (actor->draw != nullptr);
+                enemies.push_back(e);
+            }
+            actor = actor->next;
+        }
+    }
+
+    nlohmann::json payload;
+    payload["type"]           = ROOM_SNAPSHOT;
+    payload["roomKey"]        = GetCurrentRoomKey();
+    payload["targetClientId"] = targetClientId;
+    payload["enemies"]        = enemies;
+
+    // ── BG actor snapshot ────────────────────────────────────────────────────
+    // Include the LIVE positions of every BG/PROP actor that has moved from its
+    // spawn position (i.e. is already being tracked by the authority-side
+    // BgKeyframeSync scan in trackedBgActors).  Static objects that have never
+    // moved aren't in trackedBgActors and don't need to be sent — the client's
+    // locally-simulated spawn position will already be correct.
+    nlohmann::json bgObjects = nlohmann::json::array();
+    for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
+        Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+        while (actor != nullptr) {
+            // Only actors in the current room that are alive AND known to be moving.
+            if (actor->room == curRoom && actor->update != nullptr) {
+                const std::string key = GetActorKey(actor, sceneNum);
+                if (trackedBgActors.count(key)) {
+                    nlohmann::json b;
+                    b["key"]  = key;
+                    b["posX"] = actor->world.pos.x;
+                    b["posY"] = actor->world.pos.y;
+                    b["posZ"] = actor->world.pos.z;
+                    b["rotY"] = (int)actor->world.rot.y;
+                    bgObjects.push_back(b);
+                }
+            }
+            actor = actor->next;
+        }
+    }
+    payload["bgObjects"] = bgObjects;
+
+    // ── Battle Royale match state snapshot ───────────────────────────────────
+    // A late joiner must know the current BR state immediately.  We encode:
+    //   matchActive              – true if a match is in progress
+    //   killStreaks              – object of { clientId -> streak }.  0 = just respawned.
+    //   wantedClients            – array of currently-wanted client IDs
+    //   startProtectionRemainingMs – milliseconds of start-protection left (0 = none)
+    //
+    // The receiver reconstructs the exact same flags (brMatchActive,
+    // brKillStreak, wantedClients, brStartProtectionUntil) that
+    // it would have built up by processing individual BATTLE_ROYALE_EVENT packets.
+    // brEliminated is NOT included — it is a transient flag (true only between
+    // local PLAYER_KILLED send and PLAYER_ELIM receive) and is always false for
+    // a late joiner.
+    if (roomState.battleRoyaleMode) {
+        nlohmann::json brState;
+        brState["matchActive"] = brMatchActive;
+
+        nlohmann::json killStreaksJson;
+        for (const auto& [cid, streak] : brKillStreak) {
+            killStreaksJson[std::to_string(cid)] = (int)streak;
+        }
+        brState["killStreaks"] = killStreaksJson;
+
+        nlohmann::json wantedJson = nlohmann::json::array();
+        for (uint32_t cid : wantedClients) {
+            wantedJson.push_back(cid);
+        }
+        brState["wantedClients"] = wantedJson;
+
+        // Convert the absolute deadline into a relative "milliseconds remaining"
+        // value so the receiver can recreate the same deadline on their clock.
+        const auto now   = Clock::now();
+        const int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               brStartProtectionUntil - now).count();
+        brState["startProtectionRemainingMs"] = (ms > 0) ? ms : 0;
+
+        payload["brMatchState"] = brState;
+    }
+
+    SPDLOG_INFO("[Anchor] RoomSnapshot: sending {} enemy + {} BG state(s) to client {}",
+                enemies.size(), bgObjects.size(), targetClientId);
+    SendJsonToRemote(payload);
+}
+
+// ─── Handle ───────────────────────────────────────────────────────────────────
+
+void Anchor::HandlePacket_RoomSnapshot(nlohmann::json payload) {
+    // Only the designated target client applies this snapshot; all others drop it.
+    const uint32_t targetClientId = payload.value("targetClientId", 0u);
+    if (targetClientId != ownClientId) return;
+
+    if (!IsSaveLoaded() || !gPlayState) return;
+
+    // If we already moved on to a different room, the snapshot is stale — drop it.
+    const std::string roomKey = payload.value("roomKey", "");
+    if (roomKey.empty() || roomKey != GetCurrentRoomKey()) return;
+
+    if (!payload.contains("enemies")) return;
+
+    const auto& enemyArray = payload["enemies"];
+    SPDLOG_INFO("[Anchor] RoomSnapshot: applying {} enemy state(s) for room {}", enemyArray.size(), roomKey);
+
+    // Collect actors to kill in a separate list so the linked-list traversal
+    // is not invalidated by Actor_Kill mid-loop.
+    std::vector<Actor*> toKill;
+
+    for (const auto& e : enemyArray) {
+        const std::string key         = e.value("key", "");
+        const u8          hp          = (u8)e.value("hp", 0);
+        const float       posX        = e.value("posX", 0.0f);
+        const float       posY        = e.value("posY", 0.0f);
+        const float       posZ        = e.value("posZ", 0.0f);
+        const s16         rotY        = (s16)e.value("rotY", 0);
+        const s16         shapeRotY   = (s16)e.value("shapeRotY", (int)rotY);
+        const bool        alive       = e.value("alive", true);
+        const bool        drawEnabled = e.value("drawEnabled", true); // backward-compat default = visible
+
+        if (key.empty()) continue;
+
+        for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
+            Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+            while (actor != nullptr) {
+                if (GetActorKey(actor, gPlayState->sceneNum) == key) {
+                    if (!alive) {
+                        // Schedule for killing — only if not already dead.
+                        if (actor->update != nullptr) {
+                            toKill.push_back(actor);
+                        }
+                    } else {
+                        // Apply HP, position, and rotation overrides.
+                        actor->colChkInfo.health = hp;
+                        actor->world.pos.x       = posX;
+                        actor->world.pos.y       = posY;
+                        actor->world.pos.z       = posZ;
+                        actor->world.rot.y       = rotY;
+                        actor->shape.rot.y       = shapeRotY;
+
+                        // Draw-state override (Phase 4): suppress rendering for
+                        // hidden enemies (e.g. Deku Scrubs underground).
+                        // Save the original draw function so it can be restored
+                        // by EnemyPositionUpdate when the enemy reappears.
+                        if (!drawEnabled) {
+                            if (actor->draw != nullptr) {
+                                savedEnemyDrawFuncs[key] = actor->draw;
+                                actor->draw = nullptr;
+                            }
+                        } else {
+                            auto savedIt = savedEnemyDrawFuncs.find(key);
+                            if (savedIt != savedEnemyDrawFuncs.end()) {
+                                actor->draw = savedIt->second;
+                                savedEnemyDrawFuncs.erase(savedIt);
+                            }
+                        }
+
+                        // Mark as remote-driven so the non-authority's OnActorUpdate
+                        // guard does not echo this HP change back to the master.
+                        pendingRemoteHealthOverride[key] = hp;
+                    }
+                    // actorKey is unique per room — stop scanning this category.
+                    break;
+                }
+                actor = actor->next;
+            }
+        }
+    }
+
+    // Kill collected dead actors after the traversal is complete.
+    for (Actor* actor : toKill) {
+        Actor_Kill(actor);
+    }
+
+    // ── Apply BG actor positions ─────────────────────────────────────────────
+    // Populate bgActorKeyframeTarget so the per-frame blend hook immediately
+    // starts driving tracked BG actors to the correct snapshot position.
+    // Without this, a newly-joined client would see platforms at their spawn
+    // position and then "snap" to the real position on the next keyframe packet.
+    if (payload.contains("bgObjects") && roomState.syncBGObjects) {
+        const auto& bgArray = payload["bgObjects"];
+        SPDLOG_INFO("[Anchor] RoomSnapshot: applying {} BG object position(s)", bgArray.size());
+        for (const auto& b : bgArray) {
+            const std::string key = b.value("key", "");
+            if (key.empty()) continue;
+            BgKeyframeTarget target;
+            target.pos.x = b.value("posX", 0.0f);
+            target.pos.y = b.value("posY", 0.0f);
+            target.pos.z = b.value("posZ", 0.0f);
+            target.rotY  = (s16)b.value("rotY", 0);
+            bgActorKeyframeTarget[key] = target;
+        }
+    }
+
+    // ── Restore Battle Royale match state ────────────────────────────────────
+    // Rebuild brMatchActive, brKillStreak, wantedClients, brEliminated and
+    // brStartProtectionUntil from the snapshot so the late joiner behaves
+    // identically to clients that processed each BATTLE_ROYALE_EVENT in order.
+    if (payload.contains("brMatchState") && roomState.battleRoyaleMode) {
+        const auto& brs = payload["brMatchState"];
+
+        brMatchActive = brs.value("matchActive", false);
+
+        brKillStreak.clear();
+        if (brs.contains("killStreaks") && brs["killStreaks"].is_object()) {
+            for (auto& [cidStr, streakVal] : brs["killStreaks"].items()) {
+                try {
+                    const uint32_t cid    = (uint32_t)std::stoul(cidStr);
+                    const u8       streak = (u8)streakVal.get<int>();
+                    brKillStreak[cid]     = streak;
+                } catch (...) {
+                    // Malformed entry — skip silently.
+                }
+            }
+        }
+
+        wantedClients.clear();
+        if (brs.contains("wantedClients") && brs["wantedClients"].is_array()) {
+            for (const auto& cid : brs["wantedClients"]) {
+                wantedClients.insert(cid.get<uint32_t>());
+            }
+        }
+
+        // Reconstruct the start-protection deadline on the local clock.
+        const int64_t remainMs = brs.value("startProtectionRemainingMs", (int64_t)0);
+        if (remainMs > 0) {
+            brStartProtectionUntil = Clock::now() + std::chrono::milliseconds(remainMs);
+        } else {
+            brStartProtectionUntil = {};
+        }
+
+        // brEliminated ist ein transienter Flag (nur true zwischen PLAYER_KILLED-Senden
+        // und PLAYER_ELIM-Empfangen). Ein Late Joiner befindet sich nie in diesem
+        // Zwischenzustand, daher immer false setzen.
+        // Der alte 0xFF-Sentinel wurde entfernt; brKillStreak=0 bedeutet nur Respawn,
+        // nicht permanente Eliminierung.
+        brEliminated = false;
+
+        SPDLOG_INFO("[Anchor] RoomSnapshot: BR state restored — matchActive={} eliminated={} "
+                    "wantedCount={} protectionMs={}",
+                    brMatchActive, brEliminated, wantedClients.size(), remainMs);
+    }
+}

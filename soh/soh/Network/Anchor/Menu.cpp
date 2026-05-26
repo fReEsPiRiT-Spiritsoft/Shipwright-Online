@@ -272,6 +272,24 @@ void AnchorAdminMenu(WidgetInfo& info) {
 
     ImGui::EndDisabled();
 
+    ImGui::Spacing();
+    ImGui::SeparatorText("BG Object Sync");
+
+    if (UIWidgets::CVarCheckbox("Enable BG Object Sync", CVAR_REMOTE_ANCHOR("RoomSettings.SyncBGObjects"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(true)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Synchronizes background / environment objects between clients.\n\n"
+                                             "Covers:\n"
+                                             "  - Moving platforms and elevators (smooth keyframe interpolation)\n"
+                                             "  - Rotating objects (Dodongo pillars, water temple gears)\n"
+                                             "  - Destroyable objects: bombable walls, heavy blocks, etc.\n\n"
+                                             "OFF: Each client simulates BG objects independently (vanilla).\n"
+                                             "ON:  Room Master drives all BG objects; clients interpolate."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+
+    ImGui::Spacing();
     ImGui::SeparatorText("Physical Item Exchange");
 
     if (UIWidgets::CVarCheckbox("Physical Item Exchange", CVAR_REMOTE_ANCHOR("RoomSettings.PhysicalItemExchange"),
@@ -288,53 +306,204 @@ void AnchorAdminMenu(WidgetInfo& info) {
 
 void AnchorGameModesMenu(WidgetInfo& info) {
     auto anchor = Anchor::Instance;
-    bool isGlobalRoom = (std::string("soh-global") == CVarGetString(CVAR_REMOTE_ANCHOR("RoomId"), ""));
 
-    if (!anchor->isEnabled || !anchor->isConnected || anchor->roomState.ownerClientId != anchor->ownClientId ||
-        isGlobalRoom) {
+    // ── 1. Guards ────────────────────────────────────────────────────────────
+    if (!anchor->isEnabled || !anchor->isConnected) {
+        ImGui::TextDisabled("Not connected to an Anchor room.");
         return;
     }
 
-    ImGui::SeparatorText("Game Modes (Admin Only)");
+    const bool isGlobalRoom = (std::string("soh-global") == CVarGetString(CVAR_REMOTE_ANCHOR("RoomId"), ""));
+    if (isGlobalRoom) {
+        ImGui::TextDisabled("Game Modes are disabled in the Global Room.");
+        return;
+    }
 
-    if (UIWidgets::CVarCheckbox("Sync Day/Night Cycle", CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"),
-                                UIWidgets::CheckboxOptions()
-                                    .DefaultValue(false)
-                                    .Color(THEME_COLOR)
-                                    .Tooltip("When enabled, the host broadcasts the current time of day to all "
-                                             "clients every 3 seconds.\n\n"
-                                             "If either player is in an indoor scene or dungeon (where time "
-                                             "normally stands still), time is frozen globally for both players."))) {
+    const bool isAdmin = (anchor->roomState.ownerClientId == anchor->ownClientId);
+
+    // ── 2. Non-admin: read-only overview ─────────────────────────────────────
+    if (!isAdmin) {
+        ImGui::SeparatorText("Game Mode Settings (Read-Only)");
+        ImGui::TextDisabled("Only the room admin can change these settings.");
+        ImGui::Spacing();
+
+        auto& rs = anchor->roomState;
+        auto yesno = [](u8 v) -> const char* { return v ? "ON" : "OFF"; };
+
+        ImGui::Text("Day / Night Cycle Sync:  %s", yesno(rs.syncDayTime));
+        ImGui::Text("Cutscene Sync:           %s", yesno(rs.syncCutscenes));
+        ImGui::Text("Minigame Sync:           %s", yesno(rs.syncMinigames));
+        ImGui::Text("Epona / Horse Sync:      %s", yesno(rs.syncEpona));
+        ImGui::Text("Battle Royale Mode:      %s", yesno(rs.battleRoyaleMode));
+        return;
+    }
+
+    // ── 3. Admin UI ───────────────────────────────────────────────────────────
+    ImGui::SeparatorText("World Sync (Admin Only)");
+
+    if (UIWidgets::CVarCheckbox(
+            "Sync Day/Night Cycle", CVAR_REMOTE_ANCHOR("RoomSettings.SyncDayTime"),
+            UIWidgets::CheckboxOptions()
+                .DefaultValue(false)
+                .Color(THEME_COLOR)
+                .Tooltip("ON:  The room master broadcasts the time-of-day every 3 seconds.\n"
+                         "     All clients follow the same sun/moon position.\n\n"
+                         "OFF: Each player has their own independent time of day (default).\n\n"
+                         "Note: If any player is indoors or in a dungeon, time is frozen\n"
+                         "      globally so the transition does not look jarring."))) {
         anchor->SendPacket_UpdateRoomState();
     }
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Cutscene Sync");
+    ImGui::SeparatorText("Cutscene Sync (Admin Only)");
 
-    // Cutscene Sync requires Enemy Sync to be active (shares its radius/room infrastructure).
-    bool enemySyncOn = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"), 0) != 0;
+    // Cutscene sync borrows the enemy-sync room-authority infrastructure.
+    const bool enemySyncOn = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"), 0) != 0;
     ImGui::BeginDisabled(!enemySyncOn);
     if (!enemySyncOn) {
-        UIWidgets::Tooltip("Requires Enemy Sync to be enabled first.");
+        UIWidgets::Tooltip("Requires Enemy Sync to be enabled (in the Anchor Admin tab).");
     }
 
-    if (UIWidgets::CVarCheckbox("Cutscene Sync (Nearest)", CVAR_REMOTE_ANCHOR("RoomSettings.SyncCutscenes"),
-                                UIWidgets::CheckboxOptions()
-                                    .Color(THEME_COLOR)
-                                    .Tooltip("When ON: in-scene cutscenes are broadcast to nearby players\n"
-                                             "in the same room and within the Enemy Sync Radius.\n\n"
-                                             "Both players will see the same cutscene play in sync.\n"
-                                             "Players outside the radius are not affected.\n\n"
-                                             "Requires Enemy Sync to be enabled."))) {
+    if (UIWidgets::CVarCheckbox(
+            "Cutscene Sync (Nearest)", CVAR_REMOTE_ANCHOR("RoomSettings.SyncCutscenes"),
+            UIWidgets::CheckboxOptions()
+                .Color(THEME_COLOR)
+                .Tooltip("ON:  In-scene cutscenes are broadcast to players who are in the\n"
+                         "     same room and within the Enemy Sync Radius.\n"
+                         "     Both players will see the same cutscene play in lockstep.\n\n"
+                         "OFF: Each player watches cutscenes independently (default).\n\n"
+                         "Requires Enemy Sync to be enabled first."))) {
         anchor->SendPacket_UpdateRoomState();
     }
 
     ImGui::EndDisabled();
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Planned Game Modes");
-    ImGui::TextWrapped("Battle Royale, Event Sync, Minigames, Wanted/NPC escalation and other mode-specific "
-                       "systems will live on this page so the core Anchor network tab stays readable.");
+    ImGui::SeparatorText("Minigame Sync (Admin Only)");
+
+    if (UIWidgets::CVarCheckbox(
+            "Sync Minigame State & Score", CVAR_REMOTE_ANCHOR("RoomSettings.SyncMinigames"),
+            UIWidgets::CheckboxOptions()
+                .DefaultValue(true)
+                .Color(THEME_COLOR)
+                .Tooltip("ON:  The room master broadcasts minigame start/end events and\n"
+                         "     the running score to all clients in the room.\n"
+                         "     Every player's HUD counter and end-of-round NPC dialog\n"
+                         "     will show the same consistent value.\n\n"
+                         "Covers: Gerudo Horseback Archery (Yabusame), Shooting Gallery,\n"
+                         "        Bombchu Bowling, and similar score-based minigames.\n\n"
+                         "OFF: Each player accumulates their own independent score (default)."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Epona / Horse Sync (Admin Only)");
+
+    if (UIWidgets::CVarCheckbox(
+            "Sync Phantom Horses", CVAR_REMOTE_ANCHOR("RoomSettings.SyncEpona"),
+            UIWidgets::CheckboxOptions()
+                .DefaultValue(true)
+                .Color(THEME_COLOR)
+                .Tooltip("ON:  When a remote player is riding a horse, a silent En_Horse_Normal\n"
+                         "     actor is spawned below their phantom Link and driven by the\n"
+                         "     network position every frame — giving them a visible mount.\n\n"
+                         "     The phantom horse has AI disabled (update=nullptr) and lives\n"
+                         "     across room boundaries (room=-1), matching the rider's lifetime.\n\n"
+                         "OFF: Remote players on horseback appear to float (no horse visible)."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Battle Royale Mode (Admin Only)");
+
+    if (UIWidgets::CVarCheckbox(
+            "Battle Royale Mode", CVAR_REMOTE_ANCHOR("RoomSettings.BattleRoyaleMode"),
+            UIWidgets::CheckboxOptions()
+                .DefaultValue(false)
+                .Color(THEME_COLOR)
+                .Tooltip(
+                    "ON:  Aktiviert den Battle-Royale-Regelsatz fuer diesen Raum.\n\n"
+                    "  - PvP-Schaden ist vorausgesetzt (PvP-Mode muss aktiv sein).\n"
+                    "  - Jeder Kill erhoet die Kill-Streak des Angreifers.\n"
+                    "  - Ab 5 Kills: 'WANTED'-Status — nahe NPCs werden aggressiv.\n"
+                    "  - Eliminierte Spieler werden allen anderen gemeldet.\n"
+                    "  - Der letzte Ueberlebende gewinnt das Match.\n\n"
+                    "OFF: Kooperativer Standardmodus (Default).\n\n"
+                    "Empfohlene Einstellungen fuer BR:\n"
+                    "  PvP-Mode: An  (sonst kein Schaden)\n"
+                    "  Sync Items & Flags: Aus  (Progress isolieren)"))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+
+    // BR-Laufzeitanzeige: Match-Status, Wanted-Spieler und Kill-Streaks
+    const bool brOn = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.BattleRoyaleMode"), 0) != 0;
+    if (brOn) {
+        ImGui::Spacing();
+
+        // Match-Status-Indikator
+        if (anchor->brMatchActive) {
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "● Match laeuft");
+        } else {
+            ImGui::TextDisabled("● Kein aktives Match");
+        }
+        ImGui::Spacing();
+
+        // Admin-Buttons: Match starten / beenden
+        if (!anchor->brMatchActive) {
+            if (ImGui::Button("Match starten")) {
+                // Jedem Client (inkl. Host) wird ein einzigartiger Spawn-Index
+                // in Hyrule Field zugewiesen.  8 Spawn-Punkte zyklisch vergeben.
+                nlohmann::json spawnAssignments;
+                int spawnIdx = 0;
+                spawnAssignments[std::to_string(anchor->ownClientId)] = spawnIdx++;
+                for (auto& [cid, _] : anchor->clients) {
+                    spawnAssignments[std::to_string(cid)] = spawnIdx++ % 8;
+                }
+                anchor->SendPacket_BattleRoyaleEvent("MATCH_START", {
+                    { "startProtectionSecs", 10 },
+                    { "spawnAssignments",    spawnAssignments }
+                });
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Teleportiert alle Spieler zu verteilten Spawnpunkten\nin Hyrule Field und startet das Match.");
+            }
+        } else {
+            if (ImGui::Button("Match beenden (Abbruch)")) {
+                anchor->SendPacket_BattleRoyaleEvent("MATCH_END", { { "winnerClientId", 0u } });
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Beendet das laufende Match ohne Sieger (winnerClientId=0).");
+            }
+        }
+        ImGui::Spacing();
+        if (anchor->wantedClients.empty()) {
+            ImGui::TextDisabled("Keine Spieler wanted.");
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "WANTED:");
+            for (uint32_t wantedId : anchor->wantedClients) {
+                const std::string wantedName = anchor->clients.count(wantedId)
+                                                   ? anchor->clients[wantedId].name
+                                                   : std::to_string(wantedId);
+                ImGui::Text("  - %s", wantedName.c_str());
+            }
+        }
+        ImGui::Spacing();
+        bool anyStreak = false;
+        for (auto& [cid, kills] : anchor->brKillStreak) {
+            if (kills > 0 && kills != 0xFF) {
+                if (!anyStreak) {
+                    ImGui::Text("Kill-Streaks:");
+                    anyStreak = true;
+                }
+                const std::string name =
+                    anchor->clients.count(cid) ? anchor->clients[cid].name : std::to_string(cid);
+                ImGui::Text("  %s: %d", name.c_str(), (int)kills);
+            }
+        }
+        if (!anyStreak) {
+            ImGui::TextDisabled("Noch keine Kills in diesem Match.");
+        }
+    }
 }
 
 void AnchorInstructionsMenu(WidgetInfo& info) {

@@ -18,7 +18,7 @@ extern PlayState* gPlayState;
  * Unlike enemy sync, BG actors are NOT frozen on the client; their own
  * Update() logic provides dead-reckoning between keyframes.  A keyframe is
  * sent by the authority:
- *   a) Every BG_KEYFRAME_INTERVAL_FRAMES frames (heartbeat), or
+ *   a) Every BG_KEYFRAME_INTERVAL_MS milliseconds (heartbeat, FPS-unabhaengig), or
  *   b) Immediately when the actor's velocity reverses direction (platform
  *      turns around), so the client corrects without waiting for the heartbeat.
  *
@@ -60,13 +60,13 @@ void Anchor::HandlePacket_BgKeyframeSync(nlohmann::json payload) {
 
     std::string actorKey = payload["actorKey"].get<std::string>();
 
-    Vec3f targetPos = {
-        payload.value("posX", 0.0f),
-        payload.value("posY", 0.0f),
-        payload.value("posZ", 0.0f),
-    };
+    BgKeyframeTarget target;
+    target.pos.x = payload.value("posX", 0.0f);
+    target.pos.y = payload.value("posY", 0.0f);
+    target.pos.z = payload.value("posZ", 0.0f);
+    target.rotY  = (s16)payload.value("rotY", 0);
 
     // Store the target — the per-frame blend hook in HookHandlers.cpp will
-    // smoothly approach it using Math_ApproachF().
-    bgActorKeyframeTarget[actorKey] = targetPos;
+    // smoothly approach the position using Math_ApproachF().
+    bgActorKeyframeTarget[actorKey] = target;
 }

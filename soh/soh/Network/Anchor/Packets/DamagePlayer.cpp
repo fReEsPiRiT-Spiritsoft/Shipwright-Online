@@ -20,10 +20,12 @@ void Anchor::SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage) {
     }
 
     nlohmann::json payload;
-    payload["type"] = DAMAGE_PLAYER;
+    payload["type"]           = DAMAGE_PLAYER;
     payload["targetClientId"] = clientId;
-    payload["damageEffect"] = damageEffect;
-    payload["damage"] = damage;
+    payload["damageEffect"]   = damageEffect;
+    payload["damage"]         = damage;
+    // ownClientId is used by the victim's HandlePacket_DamagePlayer for BR kill attribution.
+    payload["attackerClientId"] = ownClientId;
 
     SendJsonToRemote(payload);
 }
@@ -50,6 +52,11 @@ void Anchor::HandlePacket_DamagePlayer(nlohmann::json payload) {
 
     u8 damageEffect = payload.at("damageEffect").get<u8>();
     u8 damage = payload.at("damage").get<u8>();
+
+    // Record the attacker for Battle Royale kill attribution.
+    // The value is consumed (reset to 0) by the BR death-detection hook in
+    // HookHandlers.cpp after the PLAYER_KILLED packet has been sent.
+    lastPvpAttackerClientId = payload.value("attackerClientId", 0u);
 
     self->actor.colChkInfo.damage = damage * 8; // Arbitrary number currently, need to fine tune
 

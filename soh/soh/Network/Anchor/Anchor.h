@@ -4,7 +4,9 @@
 
 #include "soh/Network/Network.h"
 #include <libultraship/libultraship.h>
+#include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <queue>
 #include <deque>
@@ -75,10 +77,14 @@ typedef struct {
     u8 syncHPAndCounts;   // 0 = per-player (HP & ammo counts separate), 1 = shared (default)
     u8 syncDayTime;       // 0 = off, 1 = on
     u8  syncEnemies;           // 0 = off (vanilla), 1 = on (custom enemy sync)
+    u8  syncBGObjects;           // 0 = off (vanilla), 1 = on (BG keyframe + kill sync)
     u16 syncRadius;              // world-unit radius for pos/anim sync; 0 = unlimited
     u8  enemySyncTickRate;       // 0=5Hz(every 4th frame), 1=10Hz(every 2nd), 2=20Hz(every frame)
     u8  physicalItemExchange;    // 0 = instant sync (default), 1 = buffer until players are <100 units apart
     u8  syncCutscenes;           // 0 = off (default), 1 = sync in-scene cutscenes to nearby players
+    u8  syncMinigames;           // 0 = off (default), 1 = broadcast minigame state/score/end events
+    u8  syncEpona;               // 0 = off (default), 1 = spawn phantom horse under remote riders
+    u8  battleRoyaleMode;        // 0 = off (default), 1 = on (PvP, kill tracking, wanted system)
 } RoomState;
 
 class Anchor : public Network {
@@ -110,20 +116,37 @@ class Anchor : public Network {
     // EnemyPositionUpdate when the enemy has actually moved.
     std::unordered_map<std::string, Vec3f> trackedEnemyPos;
 
+    // Authority: tracks whether actor->draw was non-null on the last observed frame.
+    // A change in draw state (visible ↔ hidden) triggers an immediate position packet
+    // even without movement (e.g. Deku Scrub emerging from underground).
+    std::unordered_map<std::string, bool> trackedEnemyDrawState;
+
+    // Client: saves the original draw function before we suppress it so we can
+    // restore it when the authority reports the enemy as visible again.
+    // Keyed by actorKey. Cleared on scene change.
+    std::unordered_map<std::string, ActorFunc> savedEnemyDrawFuncs;
+
     // BgKeyframeSync: authority send-side tracking per background actor.
     // Cleared on scene change together with trackedEnemyPos.
+    using Clock = std::chrono::steady_clock;
+
     struct BgKeyframe {
-        Vec3f pos = { 0, 0, 0 };  // position at last sent keyframe
-        Vec3f vel = { 0, 0, 0 };  // velocity at last sent keyframe (direction-reversal detection)
-        u32   frameLastSent = 0;  // gPlayState->state.frames when last packet was sent
+        Vec3f             pos        = { 0, 0, 0 };  // position at last sent keyframe
+        Vec3f             vel        = { 0, 0, 0 };  // velocity at last sent keyframe (direction-reversal detection)
+        Clock::time_point lastSentAt = {};            // wall-clock time of last sent packet (chrono, FPS-unabhaengig)
     };
     std::unordered_map<std::string, BgKeyframe> trackedBgActors;
 
-    // BgKeyframeSync: client receive-side — blended toward in the frame hook.
-    std::unordered_map<std::string, Vec3f> bgActorKeyframeTarget;
+    // BgKeyframeSync: client receive-side — blended toward in the per-frame hook.
+    // Stores the last keyframe received from the authority per BG actor.
+    struct BgKeyframeTarget {
+        Vec3f pos   = { 0, 0, 0 };
+        s16   rotY  = 0;  // world.rot.y from the authority keyframe
+    };
+    std::unordered_map<std::string, BgKeyframeTarget> bgActorKeyframeTarget;
 
-    // Heartbeat interval in frames (40 frames ≈ 2 s at 20 Hz).
-    static constexpr u32 BG_KEYFRAME_INTERVAL_FRAMES = 40;
+    // Heartbeat-Intervall in Millisekunden (2 s) – unabhaengig von der Framerate.
+    static constexpr uint32_t BG_KEYFRAME_INTERVAL_MS = 2000;
     // Minimum squared position change to count as "moving" (≈ 0.5 world units per frame).
     static constexpr f32 BG_POS_CHANGE_THRESHOLD_SQ  = 0.25f;
     // Client-side blend: fraction of gap closed per frame + absolute max step.
@@ -133,6 +156,10 @@ class Anchor : public Network {
     // Both sides: keyed by "sceneNum_roomNum" → set of actorKeys.  Flushed as a ROOM_KILL_SYNC
     // packet the moment the other player enters the room.
     std::map<std::string, std::set<std::string>> pendingRoomKills;
+
+    // Per-room gameplay authority: maps roomKey("{sceneNum}_{roomNum}") to masterClientId.
+    // 0 / absent = no explicit assignment; IsRoomMaster() falls back to ownerClientId.
+    std::unordered_map<std::string, uint32_t> roomAuthority;
 
     // Both sides: set to true while HandlePacket_ItemPickup removes an item via Actor_Kill
     // so the resulting OnActorKill does not echo an ITEM_PICKUP back to the sender.
@@ -145,7 +172,14 @@ class Anchor : public Network {
     // Both sides: set to true while HandlePacket_BoulderSpawn spawns a rolling
     // boulder so the local OnActorSpawn hook does not echo it back.
     bool isSpawningRemoteBoulder = false;
+    // Battle Royale: last PvP attacker that hit the local player.
+    // Set in HandlePacket_DamagePlayer; read by the BR death-detection hook in
+    // OnGameFrameUpdate.  Reset to 0 after a PLAYER_KILLED event is sent, and
+    // on every scene change to avoid stale attribution across transitions.
+    uint32_t lastPvpAttackerClientId = 0;
 
+    // Aggro radius (world units) within which NPCs turn hostile toward a "wanted" player.
+    static constexpr float BR_WANTED_NPC_AGGRO_RADIUS = 400.0f;
     // Authority-side: collectibles that spawned during the current frame's actor updates.
     // Populated by OnActorSpawn(EN_ITEM00); consumed and cleared each frame.
     struct PendingCollectibleSpawn { s16 params; Vec3f pos; };
@@ -169,6 +203,15 @@ class Anchor : public Network {
     // Used to suppress the outgoing SendPacket_GiveItem echo when Item_Give fires.
     int physicalExchangeGivePending = 0;
 
+    // Phase 6a — Room Event channel
+    // A stable, idempotent event bus for one-shot world changes (minigame starts,
+    // boss phase transitions, etc.) that don't map to a save-context flag.
+    //
+    // Key format: "{sceneNum}_{roomNum}_{eventType}_{eventKey}"
+    // Applied events are tracked per scene; the set is cleared on every scene change
+    // (OnSceneInit) so events fire fresh when the same room is re-entered.
+    std::unordered_set<std::string> processedRoomEvents;
+
     // Proximity threshold: ~100 world units ≈ 1 OoT meter.
     static constexpr float    PHYSICAL_EXCHANGE_DIST_SQ = 100.0f * 100.0f;
 
@@ -189,7 +232,18 @@ class Anchor : public Network {
     };
     EponaExchangeState eponaExchange;
 
-    // Client-side: true when the host's TIME_SYNC packet signals that time is frozen
+    // Phase 6: Phantom horse actors ───────────────────────────────────────────
+    // When a remote player has PLAYER_STATE1_ON_HORSE set, a phantom En_Horse_Normal
+    // actor is spawned at their position so local players see a horse under the rider.
+    // The phantom's update function is cleared (→ AI-silent), position is overridden
+    // every frame from the received rider position.  Cleared on scene change.
+    //
+    // Key: clientId  Value: pointer to the phantom horse Actor in the current scene
+    std::unordered_map<uint32_t, Actor*> clientPhantomHorse;
+
+    // Saddle-height offset: distance (in OoT world units) from the horse actor's
+    // world.pos (ground level) to the rider's hip/seat attachment point.
+    static constexpr float PHANTOM_HORSE_SADDLE_HEIGHT = 76.0f;
     // (either player is in a timeless scene).  Client uses this to suppress local dayTime
     // advancement between sync packets.
     bool remoteTimeFrozen = false;
@@ -242,6 +296,15 @@ class Anchor : public Network {
     void HandlePacket_UpdateRoomState(nlohmann::json payload);
     void HandlePacket_UpdateTeamState(nlohmann::json payload);
 
+    // Battle Royale event packet (host-authoritative match lifecycle)
+    void HandlePacket_BattleRoyaleEvent(nlohmann::json payload);
+
+    // Room authority handshake + snapshot packets
+    void SendPacket_RoomJoin();
+    void HandlePacket_RoomJoin(nlohmann::json payload);
+    void HandlePacket_RoomMasterAssign(nlohmann::json payload);
+    void HandlePacket_RoomSnapshot(nlohmann::json payload);
+
   public:
     uint32_t ownClientId;
     inline static const std::string clientVersion = (char*)gGitCommitHash;
@@ -280,10 +343,36 @@ class Anchor : public Network {
     inline static const std::string UPDATE_DUNGEON_ITEMS = "UPDATE_DUNGEON_ITEMS";
     inline static const std::string UPDATE_ROOM_STATE = "UPDATE_ROOM_STATE";
     inline static const std::string UPDATE_TEAM_STATE = "UPDATE_TEAM_STATE";
+    inline static const std::string ROOM_JOIN          = "ROOM_JOIN";
+    inline static const std::string ROOM_MASTER_ASSIGN = "ROOM_MASTER_ASSIGN";
+    inline static const std::string ROOM_SNAPSHOT       = "ROOM_SNAPSHOT";
+    inline static const std::string ROOM_EVENT          = "ROOM_EVENT";
+    inline static const std::string BATTLE_ROYALE_EVENT = "BATTLE_ROYALE_EVENT";
 
     static Anchor* Instance;
     std::map<uint32_t, AnchorClient> clients;
     RoomState roomState;
+
+    // ─── Battle Royale ────────────────────────────────────────────────────────
+    // Kill streak per client (host authoritative; cleared on MATCH_START / PLAYER_ELIM).
+    std::unordered_map<uint32_t, u8>  brKillStreak;
+    // Clients currently flagged as "wanted" (killStreak >= BR_WANTED_KILL_THRESHOLD).
+    std::unordered_set<uint32_t>      wantedClients;
+    // Kills required to become "wanted" (5 = default).
+    static constexpr u8               BR_WANTED_KILL_THRESHOLD   = 5;
+    // True from MATCH_START until MATCH_END.  Guards kill/death logic so the
+    // death-detection hook only fires during an active match.  Admin resets it
+    // by clicking "Match starten" in the BR admin panel.
+    bool                              brMatchActive = false;
+    // True after the local player's own PLAYER_ELIM arrives.  Prevents double-
+    // reporting (eliminated players must not send further PLAYER_KILLED events
+    // or deal PvP damage).  Reset on MATCH_START.
+    bool                              brEliminated  = false;
+    // Deadline until which PvP damage is suppressed after MATCH_START.
+    // Gives all players time to orient themselves before the fight begins.
+    // Zero-initialised → no protection active (before first match).
+    Clock::time_point                 brStartProtectionUntil = {};
+    // ─────────────────────────────────────────────────────────────────────────
 
     void Enable();
     void Disable();
@@ -309,8 +398,22 @@ class Anchor : public Network {
     void SendPacket_RoomKillSync();
     bool IsAnyClientInSameRoom() const;
     bool IsOwnerInSameRoom() const;
+    // Room-master: per-room gameplay authority helpers.
+    static std::string BuildRoomKey(s16 sceneNum, s8 roomNum);
+    std::string GetCurrentRoomKey();
+    bool IsHostAuthority();
+    bool IsRoomMaster();
+    bool IsActorInsideSyncRadius(const Actor* actor);
+    bool ShouldActorBeNetworkDriven(const Actor* actor);
+    void SendPacket_RoomSnapshot(uint32_t targetClientId);
+    // Phase 6a — generic room event broadcast / receive
+    // streaming=true: skips dedup on receive side (use for high-frequency score updates)
+    void SendPacket_RoomEvent(const std::string& eventType, const std::string& eventKey,
+                              const nlohmann::json& eventData = {}, bool streaming = false);
+    void HandlePacket_RoomEvent(nlohmann::json payload);
     void SendPacket_PlayerAttackActor(const Actor* actor, u8 damage);
     void SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage);
+    void SendPacket_BattleRoyaleEvent(const std::string& eventType, nlohmann::json data = {});
     void SendPacket_EntranceDiscovered(u16 entranceIndex);
     void SendPacket_GameComplete();
     void SendPacket_GiveItem(u16 modId, s16 getItemId);

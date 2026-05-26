@@ -24,6 +24,7 @@ void Anchor::Disable() {
     Network::Disable();
 
     clients.clear();
+    roomAuthority.clear();
     RefreshClientActors();
 }
 
@@ -153,6 +154,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_PlayerAttackActor(payload);
             else if (packetType == DAMAGE_PLAYER)
                 HandlePacket_DamagePlayer(payload);
+            else if (packetType == BATTLE_ROYALE_EVENT)
+                HandlePacket_BattleRoyaleEvent(payload);
             else if (packetType == DISABLE_ANCHOR)
                 HandlePacket_DisableAnchor(payload);
             else if (packetType == ENTRANCE_DISCOVERED)
@@ -191,6 +194,14 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_UpdateRoomState(payload);
             else if (packetType == UPDATE_DUNGEON_ITEMS)
                 HandlePacket_UpdateDungeonItems(payload);
+            else if (packetType == ROOM_JOIN)
+                HandlePacket_RoomJoin(payload);
+            else if (packetType == ROOM_MASTER_ASSIGN)
+                HandlePacket_RoomMasterAssign(payload);
+            else if (packetType == ROOM_SNAPSHOT)
+                HandlePacket_RoomSnapshot(payload);
+            else if (packetType == ROOM_EVENT)
+                HandlePacket_RoomEvent(payload);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("[Anchor] Exception while processing incoming packet {}", e.what());
             SPDLOG_ERROR("[Anchor] Packet: {}", payload.dump());
@@ -216,6 +227,90 @@ uint32_t Anchor::GetDummyPlayerClientId(const Actor* actor) {
 
 void Anchor::SetDummyPlayerClientId(const Actor* actor, uint32_t clientId) {
     ObjectExtension::GetInstance().Set<DummyPlayerClientId>(actor, DummyPlayerClientId{ clientId });
+}
+
+// MARK: - Room Authority Helpers
+
+/**
+ * Builds a stable room key from scene and room numbers.
+ * Format: "{sceneNum}_{roomNum}". Deterministic across all clients because
+ * every client loads the same scene/room layout from the ROM.
+ */
+std::string Anchor::BuildRoomKey(s16 sceneNum, s8 roomNum) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d_%d", (int)sceneNum, (int)roomNum);
+    return std::string(buf);
+}
+
+/**
+ * Returns the room key for the currently loaded scene + room,
+ * or an empty string if no game state is available.
+ */
+std::string Anchor::GetCurrentRoomKey() {
+    if (!gPlayState) return "";
+    return BuildRoomKey(gPlayState->sceneNum, gPlayState->roomCtx.curRoom.num);
+}
+
+/**
+ * True if this client is the global room admin (can change settings and
+ * assign room masters). This is the original single-authority check.
+ */
+bool Anchor::IsHostAuthority() {
+    return isConnected && ownClientId != 0 && ownClientId == roomState.ownerClientId;
+}
+
+/**
+ * True if this client is the gameplay authority for the current room.
+ *
+ * Checks the roomAuthority map first. If no explicit assignment exists for
+ * the current room key, falls back to IsHostAuthority() so rooms without the
+ * new handshake behave exactly as before (backwards compatible).
+ */
+bool Anchor::IsRoomMaster() {
+    if (!isConnected || ownClientId == 0) return false;
+    std::string key = GetCurrentRoomKey();
+    if (key.empty()) return false;
+
+    auto it = roomAuthority.find(key);
+    if (it != roomAuthority.end() && it->second != 0) {
+        return it->second == ownClientId;
+    }
+    // No explicit assignment yet — fall back to host authority.
+    return IsHostAuthority();
+}
+
+/**
+ * True if the given actor lies within the configured sync radius around the
+ * local player. When syncRadius == 0 the radius is unlimited and every actor
+ * is considered in-range. Safe to call even when gPlayState is null (returns
+ * true = "no filter applied").
+ */
+bool Anchor::IsActorInsideSyncRadius(const Actor* actor) {
+    if (roomState.syncRadius == 0 || !gPlayState) return true;
+    Player* localLink = GET_PLAYER(gPlayState);
+    if (!localLink) return true;
+    const f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+    return Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) <= rSq;
+}
+
+/**
+ * Single source-of-truth for the "Marionetten-Entscheidung":
+ * should this actor's AI be suppressed locally and driven by network data?
+ *
+ * Returns true when ALL of the following hold:
+ *  - a save is loaded and enemy sync is enabled
+ *  - we are NOT the room master (i.e. we are a non-authority client)
+ *  - the room master is present in our current scene+room
+ *  - the actor lies within the configured sync radius
+ *
+ * All call sites (ShouldActorUpdate gates, send-path guards, …) should go
+ * through this function instead of reimplementing the guards inline.
+ */
+bool Anchor::ShouldActorBeNetworkDriven(const Actor* actor) {
+    if (!IsSaveLoaded() || !roomState.syncEnemies) return false;
+    if (IsEnemyAuthority())   return false; // We ARE the authority — run AI normally.
+    if (!IsOwnerInSameRoom()) return false; // No authority present — run AI locally.
+    return IsActorInsideSyncRadius(actor);  // Within sync range: suppress local AI.
 }
 
 void Anchor::RefreshClientActors() {

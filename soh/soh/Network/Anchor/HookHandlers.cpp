@@ -69,6 +69,7 @@ void Anchor::RegisterHooks() {
         SendPacket_UpdateClientState();
 
         if (IsSaveLoaded()) {
+            SendPacket_RoomJoin(); // Announce room presence; host assigns room master.
             RefreshClientActors();
         }
     });
@@ -177,7 +178,15 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnRandoEntranceDiscovered, isConnected,
               [&](u16 entranceIndex, u8 isReversedEntrance) { SendPacket_EntranceDiscovered(entranceIndex); });
 
-    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON2, isConnected, [&](void* refActor) { SendPacket_GameComplete(); });
+    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON2, isConnected, [&](void* refActor) {
+        SendPacket_GameComplete();
+        // Battle Royale: erster Ganondorf-Sieg = Match-Sieg.
+        // Der lokale Spieler sendet MATCH_END mit sich selbst als Sieger.
+        if (roomState.battleRoyaleMode && brMatchActive) {
+            SPDLOG_INFO("[Anchor:BR] Ganondorf besiegt! Match-Sieg fuer Client {}", ownClientId);
+            SendPacket_BattleRoyaleEvent("MATCH_END", { { "winnerClientId", ownClientId } });
+        }
+    });
 
     COND_HOOK(OnItemReceive, isConnected, [&](GetItemEntry itemEntry) {
         // Handle vanilla dungeon items a bit differently
@@ -417,35 +426,20 @@ void Anchor::RegisterHooks() {
         }
     });
 
-    // Non-authority scrub stability: when the owner is present in the same room,
-    // stop local scrub AI so state decisions (pop-up/burrow) stay authority-driven.
-    // Outside sync radius, keep vanilla local behavior.
-    COND_ID_HOOK(ShouldActorUpdate, ACTOR_EN_DEKUNUTS, isConnected, [&](void* refActor, bool* should) {
-        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
-        if (!roomState.syncEnemies || !IsOwnerInSameRoom() || !gPlayState) return;
-
+    // Central enemy AI gate (Phase 2).
+    // For every ACTORCAT_ENEMY and ACTORCAT_BOSS actor, suppress local AI when
+    // the room master is in the same scene+room AND the actor is within the
+    // configured sync radius.  ShouldActorBeNetworkDriven() is the single
+    // decision point — all guards (syncEnemies, IsEnemyAuthority, IsOwnerInSameRoom,
+    // IsActorInsideSyncRadius) are centralised there.
+    // This replaces the former per-ID hooks for EN_DEKUNUTS and EN_DNS, and extends
+    // the same guarantee to every enemy in the game without additional boilerplate.
+    COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
         Actor* actor = static_cast<Actor*>(refActor);
-        if (roomState.syncRadius > 0) {
-            Player* localLink = GET_PLAYER(gPlayState);
-            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
-            if (Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) > rSq) return;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        if (ShouldActorBeNetworkDriven(actor)) {
+            *should = false;
         }
-
-        *should = false;
-    });
-
-    COND_ID_HOOK(ShouldActorUpdate, ACTOR_EN_DNS, isConnected, [&](void* refActor, bool* should) {
-        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
-        if (!roomState.syncEnemies || !IsOwnerInSameRoom() || !gPlayState) return;
-
-        Actor* actor = static_cast<Actor*>(refActor);
-        if (roomState.syncRadius > 0) {
-            Player* localLink = GET_PLAYER(gPlayState);
-            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
-            if (Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) > rSq) return;
-        }
-
-        *should = false;
     });
 
     COND_VB_SHOULD(VB_HAMMER_TOTEM_BREAK, isConnected, {
@@ -619,14 +613,26 @@ void Anchor::RegisterHooks() {
         trackedNonAuthEnemyHealth.clear();
         pendingRemoteHealthOverride.clear();
         trackedEnemyPos.clear();
+        trackedEnemyDrawState.clear();
+        savedEnemyDrawFuncs.clear();
         trackedBgActors.clear();
         bgActorKeyframeTarget.clear();
+        // Phase 6a: processed room events are scene-scoped — clear on every scene change
+        // so the same event can fire fresh when the room is re-entered.
+        processedRoomEvents.clear();
         recentCollectibleSpawns.clear();
         // Enemies respawn on every room entry, so per-scene kill lists are stale
         // after a scene transition.  Clear to avoid phantom kills on next visit.
         pendingRoomKills.clear();
         // The Epona proxy actor belongs to the unloaded scene — reset state machine.
         eponaExchange = {};
+        // All phantom horse actors belong to the unloaded scene.  Their Actor*
+        // pointers are now dangling — clear the map so DummyPlayer_Update spawns
+        // fresh phantoms when riders re-enter.
+        clientPhantomHorse.clear();
+        // Reset PvP attacker attribution: the previous scene's attacker is no
+        // longer relevant after a scene transition.
+        lastPvpAttackerClientId = 0;
     });
 
     // Non-authority: intercept damage BEFORE the actor processes it.
@@ -760,6 +766,23 @@ void Anchor::RegisterHooks() {
         trackedEnemyHealth[key] = currentHealth;
         if (healthChanged) {
             SendPacket_ActorStateUpdate(actor);
+        }
+
+        // ── Draw-state sync: fire immediately when visibility toggles ────────
+        // Covers Deku Scrubs emerging/hiding, any enemy that sets draw = NULL.
+        // actor->draw == nullptr is the standard "hidden" marker for many enemies.
+        // We track changes only so the first observation never fires spuriously.
+        bool currentDraw = (actor->draw != nullptr);
+        {
+            auto drawIt = trackedEnemyDrawState.find(key);
+            bool drawChanged = (drawIt != trackedEnemyDrawState.end())
+                               && (drawIt->second != currentDraw);
+            trackedEnemyDrawState[key] = currentDraw;
+            if (drawChanged) {
+                // Reuse the position packet — it now carries drawEnabled too.
+                SendPacket_EnemyPositionUpdate(actor);
+                trackedEnemyPos[key] = actor->world.pos; // suppress duplicate pos update
+            }
         }
 
         // ── Position sync: room-gated + radius-gated + tick-rate throttled ──
@@ -919,6 +942,35 @@ void Anchor::RegisterHooks() {
             SPDLOG_INFO("[Anchor:EnemySync] CLIENT: ROOM_KILL_SYNC sent immediately (owner in room)");
             SendPacket_RoomKillSync();
         }
+    });
+
+    // Authority: broadcast BG/PROP actor kills (destroyable objects — bombable
+    // walls, heavy blocks, collapsing platforms, etc.) so all clients remove the
+    // same actor from their local scene.
+    //
+    // This extends the ACTOR_KILLED packet (originally enemy-only) to also cover
+    // ACTORCAT_BG and ACTORCAT_PROP.  No ROOM_KILL_SYNC needed for BG objects
+    // because permanent destruction is already covered by scene-flag sync
+    // (Bg_Breakwall sets a flag when destroyed); this packet handles live, in-room
+    // destruction during shared gameplay.
+    COND_HOOK(OnActorKill, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
+        if (!roomState.syncBGObjects) return;
+        if (!gPlayState) return;
+
+        Actor* actor = (Actor*)actorRef;
+        if (actor->category != ACTORCAT_BG && actor->category != ACTORCAT_PROP) return;
+        if (!IsAnyClientInSameRoom()) return;
+
+        std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        SPDLOG_INFO("[Anchor:BgSync] HOST: BG actor killed | actorKey={} | actorId={} | pos=({:.1f},{:.1f},{:.1f})",
+                    key, (int)actor->id, actor->world.pos.x, actor->world.pos.y, actor->world.pos.z);
+
+        // Clean up authority-side tracking so the dead actor is never re-sent.
+        trackedBgActors.erase(key);
+        bgActorKeyframeTarget.erase(key); // harmless on authority; defensive cleanup
+
+        SendPacket_ActorKilled(actor);
     });
 
     // Both sides: when a dropped collectible is picked up, remove the matching
@@ -1171,8 +1223,11 @@ void Anchor::RegisterHooks() {
     //   a) The actor has moved and the heartbeat interval has elapsed, OR
     //   b) The actor's velocity has reversed direction (platform turnaround).
     // Static actors (zero movement) are skipped automatically.
+    // Guarded by roomState.syncBGObjects (separate from syncEnemies) so BG and enemy sync
+    // can be toggled independently.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
         if (!IsEnemyAuthority() || !IsSaveLoaded() || !gPlayState) return;
+        if (!roomState.syncBGObjects) return;
         if (!IsAnyClientInSameRoom()) return;
 
         for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
@@ -1188,7 +1243,10 @@ void Anchor::RegisterHooks() {
                 float distSq = dx*dx + dy*dy + dz*dz;
 
                 if (distSq > BG_POS_CHANGE_THRESHOLD_SQ) {
-                    u32 framesSinceSent = gPlayState->state.frames - kf.frameLastSent;
+                    // Zeit-basiertes Heartbeat-Intervall: unabhaengig von der Framerate.
+                    auto  now          = Clock::now();
+                    auto  msSinceSent  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             now - kf.lastSentAt).count();
 
                     // Velocity direction reversal detection (dot product sign flip).
                     float dot = actor->velocity.x * kf.vel.x
@@ -1198,9 +1256,9 @@ void Anchor::RegisterHooks() {
                     float magLast = fabsf(kf.vel.x) + fabsf(kf.vel.y) + fabsf(kf.vel.z);
                     bool  velReversed = (magCur > 0.001f && magLast > 0.001f && dot < 0.0f);
 
-                    if (velReversed || framesSinceSent >= BG_KEYFRAME_INTERVAL_FRAMES) {
+                    if (velReversed || static_cast<uint32_t>(msSinceSent) >= BG_KEYFRAME_INTERVAL_MS) {
                         SendPacket_BgKeyframeSync(actor);
-                        kf.frameLastSent = gPlayState->state.frames;
+                        kf.lastSentAt = now;
                     }
                 }
 
@@ -1212,10 +1270,12 @@ void Anchor::RegisterHooks() {
     });
 
     // Client: every frame, blend all tracked BG actors toward their last
-    // received keyframe target using Math_ApproachF for smooth correction.
+    // received keyframe target using Math_ApproachF for smooth position correction.
+    // world.rot.y is snapped directly (no blend) because rotation reversals must be
+    // immediate — blending a rotation that just reversed would show the wrong direction.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
         if (IsEnemyAuthority() || !IsSaveLoaded() || !gPlayState) return;
-        if (bgActorKeyframeTarget.empty()) return;
+        if (!roomState.syncBGObjects || bgActorKeyframeTarget.empty()) return;
 
         for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
@@ -1223,10 +1283,11 @@ void Anchor::RegisterHooks() {
                 std::string key = GetActorKey(actor, gPlayState->sceneNum);
                 auto it = bgActorKeyframeTarget.find(key);
                 if (it != bgActorKeyframeTarget.end()) {
-                    Vec3f& target = it->second;
-                    Math_ApproachF(&actor->world.pos.x, target.x, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
-                    Math_ApproachF(&actor->world.pos.y, target.y, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
-                    Math_ApproachF(&actor->world.pos.z, target.z, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                    const BgKeyframeTarget& target = it->second;
+                    Math_ApproachF(&actor->world.pos.x, target.pos.x, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                    Math_ApproachF(&actor->world.pos.y, target.pos.y, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                    Math_ApproachF(&actor->world.pos.z, target.pos.z, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                    actor->world.rot.y = target.rotY; // snap — avoids lag on direction reversals
                 }
                 actor = actor->next;
             }
@@ -1272,6 +1333,195 @@ void Anchor::RegisterHooks() {
     // Clear per-frame collectible-spawn tracking used by ENEMY_DROP_ITEM.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
         recentCollectibleSpawns.clear();
+    });
+
+    // ── Phase 6a: Minigame state monitoring ──────────────────────────────────
+    // The Room Master watches gSaveContext.minigameState / minigameScore for
+    // transitions and broadcasts ROOM_EVENT packets so every client in the same
+    // room keeps the same minigame state and score.
+    //
+    // All three event types use streaming=true so:
+    //  • Dedup is bypassed  → a minigame can be replayed without resync issues.
+    //  • quiet=true is set  → no log spam for per-hit SCORE updates.
+    //
+    // Affected minigames (non-exhaustive):
+    //   minigameState=1  Gerudo Horseback Archery — minigameScore = hit count
+    //   minigameState=2  Bombchu Bowling target phase
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (!IsRoomMaster())          return;  // only the room authority emits these
+        if (!IsAnyClientInSameRoom()) return;  // nobody to sync with
+        if (!roomState.syncMinigames) return;  // feature disabled by admin
+
+        // Reset tracking vars when the scene changes so a stale lastMinigameState
+        // from the previous scene can't trigger a phantom MINIGAME_END.
+        static u16 lastMinigameState = 0;
+        static u16 lastMinigameScore = 0;
+        static s16 lastSceneNum      = -1;
+
+        const s16 curScene = gPlayState->sceneNum;
+        if (curScene != lastSceneNum) {
+            lastMinigameState = 0;
+            lastMinigameScore = 0;
+            lastSceneNum      = curScene;
+            return;  // skip event generation on the first frame of the new scene
+        }
+
+        const u16 curState = gSaveContext.minigameState;
+        const u16 curScore = gSaveContext.minigameScore;
+
+        // ── State transitions ─────────────────────────────────────────────────
+        if (lastMinigameState == 0 && curState != 0) {
+            // 0 → active: minigame just started.
+            nlohmann::json data;
+            data["minigameId"] = (int)curState;
+            data["score"]      = 0;
+            SendPacket_RoomEvent("MINIGAME_START", "minigame_start", data, /*streaming=*/true);
+
+        } else if (lastMinigameState != 0 && curState == 0) {
+            // active → 0: minigame ended.  Send final score so clients can apply
+            // it before the NPC dialog reads gSaveContext.minigameScore.
+            const bool won = (lastMinigameScore > 0);  // Heuristik: Score > 0 = Sieg
+            nlohmann::json data;
+            data["minigameId"] = (int)lastMinigameState;
+            data["finalScore"] = (int)lastMinigameScore;
+            data["won"]        = won;
+            SendPacket_RoomEvent("MINIGAME_END", "minigame_end", data, /*streaming=*/true);
+            // Notification fuer den Room Master (der selbst das Minispiel gespielt hat).
+            Notification::Emit({
+                .prefix      = won ? "Minispiel gewonnen!" : "Minispiel beendet",
+                .prefixColor = won ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
+                                   : ImVec4(0.55f, 0.55f, 0.55f, 1.0f),
+                .message     = "Punkte: " + std::to_string((int)lastMinigameScore),
+                .remainingTime = 5.0f,
+            });
+        }
+
+        // ── Live score updates ────────────────────────────────────────────────
+        if (curState != 0 && curScore != lastMinigameScore) {
+            nlohmann::json data;
+            data["minigameId"] = (int)curState;
+            data["score"]      = (int)curScore;
+            // streaming=true → dedup bypassed + quiet=true (may fire every hit frame)
+            SendPacket_RoomEvent("MINIGAME_SCORE", "minigame_score", data, /*streaming=*/true);
+        }
+
+        lastMinigameState = curState;
+        lastMinigameScore = curScore;
+    });
+
+    // ── Phase 6b: Battle Royale — Tod-Erkennung ───────────────────────────────
+    // Ueberwacht den PLAYER_STATE1_DEAD-Flag des lokalen Spielers. Wechselt er von
+    // alive → dead UND ist ein letzter PvP-Angreifer gespeichert, wird ein
+    // PLAYER_KILLED-Paket an alle Peers geschickt. Der Host verarbeitet es
+    // autoritativ (Kill-Streak, WANTED_SET, PLAYER_ELIM).
+    //
+    // Warum Polling statt Hook: Es gibt keinen dedizierten OnPlayerDeath-Hook in
+    // GameInteractor. PLAYER_STATE1_DEAD ist das N64-native Todesflag und wird vom
+    // Player-Overlay selbst gesetzt – Polling in OnGameFrameUpdate ist die
+    // zuverlaessigste und einfachste Methode.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsSaveLoaded() || !gPlayState || !roomState.battleRoyaleMode) return;
+        if (!brMatchActive)               return;  // kein aktives Match, kein Kill
+        if (brEliminated)                 return;  // bereits eliminiert, kein doppeltes PLAYER_KILLED
+        if (Clock::now() < brStartProtectionUntil) return;  // Startschutz laeuft noch
+        if (!roomState.pvpMode)           return;  // BR ohne PvP ergibt keinen Kill
+        if (lastPvpAttackerClientId == 0) return;  // kein ausstehender Kill zu melden
+
+        Player* player = GET_PLAYER(gPlayState);
+        if (!player) return;
+
+        // Statische bool verfolgt den Alive/Dead-Uebergang zwischen Frames.
+        static bool wasAlive = true;
+        const bool  isDead   = (player->stateFlags1 & PLAYER_STATE1_DEAD) != 0;
+
+        if (wasAlive && isDead) {
+            // Übergang alive → dead mit bekanntem PvP-Angreifer: Kill melden.
+            // Inventar-Snapshot mitschicken, damit der Host lootbare Items auswählen kann.
+            nlohmann::json victimInventory = nlohmann::json::array();
+            for (int s = 0; s < 24; s++) {
+                victimInventory.push_back(static_cast<int>(gSaveContext.inventory.items[s]));
+            }
+            SPDLOG_INFO("[Anchor:BR] Lokaler Spieler getoetet von Client {}",
+                        lastPvpAttackerClientId);
+            SendPacket_BattleRoyaleEvent("PLAYER_KILLED", {
+                { "attackerClientId", lastPvpAttackerClientId },
+                { "victimInventory",  victimInventory         }
+            });
+            brEliminated            = true;   // Temporaer bis PLAYER_ELIM empfangen
+            lastPvpAttackerClientId = 0;       // Attribution zurücksetzen
+        }
+
+        wasAlive = !isDead;
+    });
+
+    // ── Phase 6b: Battle Royale — Wanted-NPC-Aggro ───────────────────────────
+    // Wenn der lokale Spieler "wanted" ist (wantedClients enthaelt ownClientId),
+    // werden NPCs in WANTED_NPC_AGGRO_RADIUS nach jedem Update-Frame auf den
+    // Spieler ausgerichtet und mit Mindestgeschwindigkeit versehen.
+    //
+    // Implementierung via OnActorUpdate (nach dem eigentlichen NPC-Update):
+    // Setzt world.rot.y / shape.rot.y und speedXZ, damit NPCs die in Gehrichtung
+    // gehen, automatisch auf den Spieler zulaufen.  Keine einzelnen Overlay-Eingriffe.
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* refActor) {
+        if (!IsSaveLoaded() || !gPlayState || !roomState.battleRoyaleMode) return;
+        if (!wantedClients.count(ownClientId)) return;  // lokaler Spieler nicht wanted
+
+        Actor* actor = static_cast<Actor*>(refActor);
+        if (actor->category != ACTORCAT_NPC) return;
+
+        Player* player = GET_PLAYER(gPlayState);
+        if (!player) return;
+
+        const float dx     = player->actor.world.pos.x - actor->world.pos.x;
+        const float dz     = player->actor.world.pos.z - actor->world.pos.z;
+        const float distSq = dx * dx + dz * dz;
+        const float rSq    = BR_WANTED_NPC_AGGRO_RADIUS * BR_WANTED_NPC_AGGRO_RADIUS;
+
+        if (distSq < 1.0f || distSq > rSq) return;
+
+        // Drehe den NPC zum Spieler — viele OoT-NPCs nehmen shape.rot.y
+        // als Bewegungsrichtung, wenn sie vorwaerts gehen.
+        const s16 yawToPlayer = Math_Atan2S(dx, dz);
+        actor->world.rot.y    = yawToPlayer;
+        actor->shape.rot.y    = yawToPlayer;
+
+        // Minimale Gehgeschwindigkeit, damit der NPC sich tatsaechlich bewegt.
+        // Der eigene Actor-Update hat speedXZ bereits gesetzt; nur erhoehen, nie
+        // senken, um die Actor-KI nicht zu stoeren.
+        if (actor->speedXZ >= 0.0f && actor->speedXZ < 2.0f) {
+            actor->speedXZ = 2.0f;
+        }
+    });
+
+    // ── Phase 6b: Battle Royale — Cheats deaktivieren ────────────────────────
+    // Solange battleRoyaleMode aktiv ist, werden alle gameplay-relevanten Cheats
+    // pro Frame auf 0 erzwungen. Damit kann kein Spieler im kompetitiven Modus
+    // Vorteile durch Infinite-Health, Moon-Jump o.ae. erlangen.
+    //
+    // Mechanismus: COND_HOOK laeuft jeden Frame; wenn der CVar != 0 ist, wird er
+    // per CVarSetInteger gecleared. Der jeweilige Cheat-Hook prueft seinen eigenen
+    // CVar als Bedingung (COND_HOOK), sodass dessen Effekt im naechsten Frame
+    // ebenfalls nicht mehr ausgeloest wird.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!roomState.battleRoyaleMode) return;
+
+        static const char* const kBrBlockedCheats[] = {
+            CVAR_CHEAT("InfiniteHealth"),
+            CVAR_CHEAT("InfiniteAmmo"),
+            CVAR_CHEAT("InfiniteMagic"),
+            CVAR_CHEAT("InfiniteNayru"),
+            CVAR_CHEAT("InfiniteMoney"),
+            CVAR_CHEAT("MoonJumpOnL"),
+            CVAR_CHEAT("NoRestrictItems"),
+            CVAR_CHEAT("DekuStick"),
+        };
+
+        for (const char* cvar : kBrBlockedCheats) {
+            if (CVarGetInteger(cvar, 0) != 0) {
+                CVarSetInteger(cvar, 0);
+            }
+        }
     });
 
     // #endregion  // end RegisterHooks
