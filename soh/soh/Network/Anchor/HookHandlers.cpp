@@ -486,11 +486,17 @@ void Anchor::RegisterHooks() {
         const std::string key = GetActorKey(actor, gPlayState->sceneNum);
         auto it = remoteEnemyPos.find(key);
         if (it == remoteEnemyPos.end()) return;
+        // Derive the focus Y offset the actor computed during its own update.
+        // We cannot use a named field (focusYoffset only exists on EnAObj, not Actor).
+        // Since OnBeforeActorUpdate already pinned world.pos = remote_pos, the actor's
+        // update() ran at the correct position and its focus.pos is already relative
+        // to that position.  We just capture the current delta before restoring world.pos.
+        const float focusOffsetY = actor->focus.pos.y - actor->world.pos.y;
         // Restore world.pos — the update may have moved the actor via its own AI.
         actor->world.pos = it->second;
         // Keep focus.pos (Z-targeting reticle) at the synced position.
         actor->focus.pos.x = it->second.x;
-        actor->focus.pos.y = it->second.y + actor->focusYoffset;
+        actor->focus.pos.y = it->second.y + focusOffsetY;
         actor->focus.pos.z = it->second.z;
         // Zero velocity again so the next frame's pre-update pin finds the actor clean.
         actor->velocity.x = 0.0f;
