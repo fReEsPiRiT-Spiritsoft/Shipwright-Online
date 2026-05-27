@@ -14,8 +14,10 @@ extern PlayState* gPlayState;
 
 // ─── Battle Royale Spawn Table ───────────────────────────────────────────────
 // 8 gleichmaessig ueber Hyrule Field verteilte Spawnpunkte.
-// Y=0 ist auf dem flachen Hyrule Field sicher; die N64-Engine floor-snappt
-// den Spieler in jedem Frame automatisch auf den Boden.
+// Y=100 statt 0: der Spieler spawnt 100 Units ueber dem nominalen Boden und faellt
+// durch Schwerkraft auf das Terrain.  Das verhindert das Durchfallen durch die Map,
+// das bei Y=0 auftreten kann wenn der erste Physik-Frame den Boden noch nicht sicher
+// erfasst hat.  100 Units Fall ist in OoT weit unterhalb der Falldamage-Schwelle (~600).
 // Yaw (s16): OoT-Konvention – 0=Sued, 0x4000=West, 0x8000=Nord, 0xC000=Ost.
 struct BrSpawnPoint {
     float x;
@@ -24,14 +26,14 @@ struct BrSpawnPoint {
     s16   yaw;
 };
 static constexpr BrSpawnPoint kBrHyruleFieldSpawns[] = {
-    { -1600.0f, 0.0f,  5000.0f, (s16)0x8000 },  // Sued  (Kokiri Forest Seite) – Richtung Norden
-    {  3000.0f, 0.0f,  3500.0f, (s16)0xC000 },  // Suedost  (Lon Lon Ranch)   – Richtung Westen
-    {  3500.0f, 0.0f,  -500.0f, (s16)0xC000 },  // Ost                        – Richtung Westen
-    {  2200.0f, 0.0f, -3500.0f, (s16)0xE000 },  // Nordost  (Kakariko Seite)  – Richtung Suedwest
-    {  -500.0f, 0.0f, -2500.0f, (s16)0x0000 },  // Nord  (Schloss-Seite)      – Richtung Sueden
-    { -3800.0f, 0.0f,  -500.0f, (s16)0x4000 },  // Nordwest                   – Richtung Osten
-    { -4000.0f, 0.0f,  2500.0f, (s16)0x4000 },  // West  (Gerudo Tal Seite)   – Richtung Osten
-    { -1000.0f, 0.0f,  2500.0f, (s16)0x8000 },  // Mitte                      – Richtung Norden
+    { -1600.0f, 100.0f,  5000.0f, (s16)0x8000 },  // Sued  (Kokiri Forest Seite) – Richtung Norden
+    {  3000.0f, 100.0f,  3500.0f, (s16)0xC000 },  // Suedost  (Lon Lon Ranch)   – Richtung Westen
+    {  3500.0f, 100.0f,  -500.0f, (s16)0xC000 },  // Ost                        – Richtung Westen
+    {  2200.0f, 100.0f, -3500.0f, (s16)0xE000 },  // Nordost  (Kakariko Seite)  – Richtung Suedwest
+    {  -500.0f, 100.0f, -2500.0f, (s16)0x0000 },  // Nord  (Schloss-Seite)      – Richtung Sueden
+    { -3800.0f, 100.0f,  -500.0f, (s16)0x4000 },  // Nordwest                   – Richtung Osten
+    { -4000.0f, 100.0f,  2500.0f, (s16)0x4000 },  // West  (Gerudo Tal Seite)   – Richtung Osten
+    { -1000.0f, 100.0f,  2500.0f, (s16)0x8000 },  // Mitte                      – Richtung Norden
 };
 static constexpr int kBrSpawnCount = (int)(sizeof(kBrHyruleFieldSpawns) / sizeof(kBrHyruleFieldSpawns[0]));
 
@@ -111,6 +113,11 @@ static bool IsBrLootable(u8 item) {
 void Anchor::SendPacket_BattleRoyaleEvent(const std::string& eventType, nlohmann::json data) {
     data["type"]      = BATTLE_ROYALE_EVENT;
     data["eventType"] = eventType;
+    data["clientId"]  = ownClientId; // needed so HandlePacket sees the correct sender
+    // The Anchor server does NOT echo packets back to the sender, so the host would
+    // never handle its own broadcasts (MATCH_START, MATCH_END, PLAYER_ELIM, …).
+    // Handle the event locally first so the host's state is always in sync.
+    HandlePacket_BattleRoyaleEvent(data);
     SendJsonToRemote(data);
 }
 
