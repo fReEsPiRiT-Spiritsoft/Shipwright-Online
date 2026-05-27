@@ -13,27 +13,18 @@ extern PlayState* gPlayState;
 }
 
 // ─── Battle Royale Spawn Table ───────────────────────────────────────────────
-// 8 gleichmaessig ueber Hyrule Field verteilte Spawnpunkte.
-// Y=100 statt 0: der Spieler spawnt 100 Units ueber dem nominalen Boden und faellt
-// durch Schwerkraft auf das Terrain.  Das verhindert das Durchfallen durch die Map,
-// das bei Y=0 auftreten kann wenn der erste Physik-Frame den Boden noch nicht sicher
-// erfasst hat.  100 Units Fall ist in OoT weit unterhalb der Falldamage-Schwelle (~600).
-// Yaw (s16): OoT-Konvention – 0=Sued, 0x4000=West, 0x8000=Nord, 0xC000=Ost.
+// Echte Engine-Entrances in Hyrule Field (wie bei bestehender Spawn/Entrance-Logik).
+// Dadurch nutzen wir validierte Spawnpunkte statt eigener Weltkoordinaten.
 struct BrSpawnPoint {
-    float x;
-    float y;
-    float z;
-    s16   yaw;
+    s32         entranceIndex;
+    const char* label;
 };
 static constexpr BrSpawnPoint kBrHyruleFieldSpawns[] = {
-    { -1600.0f, 100.0f,  5000.0f, (s16)0x8000 },  // Sued  (Kokiri Forest Seite) – Richtung Norden
-    {  3000.0f, 100.0f,  3500.0f, (s16)0xC000 },  // Suedost  (Lon Lon Ranch)   – Richtung Westen
-    {  3500.0f, 100.0f,  -500.0f, (s16)0xC000 },  // Ost                        – Richtung Westen
-    {  2200.0f, 100.0f, -3500.0f, (s16)0xE000 },  // Nordost  (Kakariko Seite)  – Richtung Suedwest
-    {  -500.0f, 100.0f, -2500.0f, (s16)0x0000 },  // Nord  (Schloss-Seite)      – Richtung Sueden
-    { -3800.0f, 100.0f,  -500.0f, (s16)0x4000 },  // Nordwest                   – Richtung Osten
-    { -4000.0f, 100.0f,  2500.0f, (s16)0x4000 },  // West  (Gerudo Tal Seite)   – Richtung Osten
-    { -1000.0f, 100.0f,  2500.0f, (s16)0x8000 },  // Mitte                      – Richtung Norden
+    { ENTR_HYRULE_FIELD_ON_BRIDGE_SPAWN, "Zugbruecke" },
+    { ENTR_HYRULE_FIELD_CENTER_EXIT,     "Lon Lon Ranch" },
+    { ENTR_HYRULE_FIELD_STAIRS_EXIT,     "Kakariko Eingang" },
+    { ENTR_HYRULE_FIELD_FENCE_EXIT,      "Hylia-See Eingang" },
+    { ENTR_HYRULE_FIELD_ROCKY_PATH,      "Gerudo Tal Bruecke" },
 };
 static constexpr int kBrSpawnCount = (int)(sizeof(kBrHyruleFieldSpawns) / sizeof(kBrHyruleFieldSpawns[0]));
 
@@ -166,35 +157,20 @@ void Anchor::HandlePacket_BattleRoyaleEvent(nlohmann::json payload) {
 
         // ── Spawn-Teleport nach Hyrule Field ─────────────────────────────────
         // Der Host weist jedem Client per spawnAssignments einen Spawn-Index zu
-        // (JSON-Objekt: clientId_string → index).  Wir lesen unseren Index,
-        // schlagen die Position in kBrHyruleFieldSpawns nach und teleportieren
-        // ueber den RESPAWN_MODE_DOWN-Pfad – identisch zu HandlePacket_TeleportTo.
+        // (JSON-Objekt: clientId_string → index).  Der Index verweist auf einen
+        // echten Engine-Entrance in Hyrule Field.
         if (IsSaveLoaded() && gPlayState) {
             auto spawnMap = payload.value("spawnAssignments", nlohmann::json::object());
             const std::string selfKey = std::to_string(ownClientId);
             const int spawnIdx = spawnMap.value(selfKey, 0) % kBrSpawnCount;
             const BrSpawnPoint& sp = kBrHyruleFieldSpawns[spawnIdx];
 
-            gPlayState->nextEntranceIndex = ENTR_HYRULE_FIELD_0_1;
+            gPlayState->nextEntranceIndex = sp.entranceIndex;
             gPlayState->transitionTrigger = TRANS_TRIGGER_START;
             gPlayState->transitionType    = TRANS_TYPE_INSTANT;
-
-            gSaveContext.respawn[RESPAWN_MODE_DOWN].entranceIndex = ENTR_HYRULE_FIELD_0_1;
-            gSaveContext.respawn[RESPAWN_MODE_DOWN].roomIndex     = 0;
-            gSaveContext.respawn[RESPAWN_MODE_DOWN].pos           = { sp.x, sp.y, sp.z };
-            gSaveContext.respawn[RESPAWN_MODE_DOWN].yaw           = sp.yaw;
-            gSaveContext.respawn[RESPAWN_MODE_DOWN].playerParams  = 0xDFF;
             gSaveContext.nextTransitionType                       = TRANS_TYPE_FADE_BLACK_FAST;
-            gSaveContext.respawnFlag                              = 1;
 
-            // Void-Schaden beim Respawn unterdruecken (wie HandlePacket_TeleportTo).
-            static HOOK_ID spawnHookId = 0;
-            spawnHookId = REGISTER_VB_SHOULD(VB_INFLICT_VOID_DAMAGE, {
-                *should = false;
-                GameInteractor::Instance->UnregisterGameHookForID<GameInteractor::OnVanillaBehavior>(spawnHookId);
-            });
-
-            SPDLOG_INFO("[Anchor:BR] Spawn-Punkt {} ({:.0f},{:.0f},{:.0f})", spawnIdx, sp.x, sp.y, sp.z);
+            SPDLOG_INFO("[Anchor:BR] Match-Spawn: {} (entrance=0x{:X})", sp.label, (u32)sp.entranceIndex);
         }
 
         SPDLOG_INFO("[Anchor:BR] Match gestartet! Startschutz: {}s", protSecs);
@@ -324,34 +300,19 @@ void Anchor::HandlePacket_BattleRoyaleEvent(nlohmann::json payload) {
             brEliminated           = false;
             brStartProtectionUntil = Clock::now() + std::chrono::seconds(10);
 
-            // 6. Respawn in Hyrule Field – zufälliger Spawn-Punkt, damit Spieler
-            //    nicht immer an derselben Stelle auftauchen.
+            // 6. Respawn in Hyrule Field über echte Engine-Entrances.
             if (IsSaveLoaded() && gPlayState) {
                 static uint32_t respawnCounter = 0;
                 const int spawnIdx = (++respawnCounter ^ static_cast<uint32_t>(targetId)) % kBrSpawnCount;
                 const BrSpawnPoint& sp = kBrHyruleFieldSpawns[spawnIdx];
 
-                gPlayState->nextEntranceIndex = ENTR_HYRULE_FIELD_0_1;
+                gPlayState->nextEntranceIndex = sp.entranceIndex;
                 gPlayState->transitionTrigger = TRANS_TRIGGER_START;
                 gPlayState->transitionType    = TRANS_TYPE_INSTANT;
-
-                gSaveContext.respawn[RESPAWN_MODE_DOWN].entranceIndex = ENTR_HYRULE_FIELD_0_1;
-                gSaveContext.respawn[RESPAWN_MODE_DOWN].roomIndex     = 0;
-                gSaveContext.respawn[RESPAWN_MODE_DOWN].pos           = { sp.x, sp.y, sp.z };
-                gSaveContext.respawn[RESPAWN_MODE_DOWN].yaw           = sp.yaw;
-                gSaveContext.respawn[RESPAWN_MODE_DOWN].playerParams  = 0xDFF;
                 gSaveContext.nextTransitionType                       = TRANS_TYPE_FADE_BLACK_FAST;
-                gSaveContext.respawnFlag                              = 1;
 
-                // Void-Schaden beim Respawn unterdrücken (wie HandlePacket_TeleportTo).
-                static HOOK_ID respawnHookId = 0;
-                respawnHookId = REGISTER_VB_SHOULD(VB_INFLICT_VOID_DAMAGE, {
-                    *should = false;
-                    GameInteractor::Instance->UnregisterGameHookForID<GameInteractor::OnVanillaBehavior>(respawnHookId);
-                });
-
-                SPDLOG_INFO("[Anchor:BR] Respawn-Punkt {} ({:.0f},{:.0f},{:.0f})",
-                            spawnIdx, sp.x, sp.y, sp.z);
+                SPDLOG_INFO("[Anchor:BR] Respawn: {} (entrance=0x{:X})",
+                            sp.label, (u32)sp.entranceIndex);
             }
 
             const int lootCount = static_cast<int>(lootItems.size());

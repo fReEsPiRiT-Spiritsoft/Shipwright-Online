@@ -86,13 +86,20 @@ void Anchor::HandlePacket_AllClientState(nlohmann::json payload) {
         std::vector<RoomReassignment> reassignments;
 
         for (const auto& [roomKey, masterClientId] : roomAuthority) {
-            // Prüfen ob der aktuelle Master noch online ist (inkl. Host selbst).
-            bool masterOnline = (masterClientId == ownClientId);
-            if (!masterOnline) {
+            // Prüfen ob der aktuelle Master noch im Raum ist (nicht nur online).
+            // Ein Master der den Raum verlassen hat gilt als abwesend und löst
+            // eine Neuzuweisung an einen verbleibenden Client im selben Raum aus.
+            bool masterInRoom = false;
+            if (masterClientId == ownClientId) {
+                // Host selbst ist Master — prüfe ob Host noch im Raum ist.
+                masterInRoom = IsSaveLoaded() && gPlayState && (GetCurrentRoomKey() == roomKey);
+            } else {
                 auto mit = clients.find(masterClientId);
-                if (mit != clients.end() && mit->second.online) masterOnline = true;
+                if (mit != clients.end() && mit->second.online) {
+                    masterInRoom = (BuildRoomKey((s16)mit->second.sceneNum, (s8)mit->second.curRoomNum) == roomKey);
+                }
             }
-            if (masterOnline) continue;
+            if (masterInRoom) continue;
 
             // Ersatz suchen: erster online + saveLoaded Client im selben Raum.
             uint32_t replacement = 0;

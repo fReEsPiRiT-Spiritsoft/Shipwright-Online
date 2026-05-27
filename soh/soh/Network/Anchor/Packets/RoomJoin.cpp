@@ -40,6 +40,15 @@ void Anchor::SendPacket_RoomJoin() {
     payload["roomKey"]  = GetCurrentRoomKey();
     payload["sceneNum"] = gPlayState->sceneNum;
     payload["roomNum"]  = (int)gPlayState->roomCtx.curRoom.num;
+    payload["clientId"] = ownClientId;  // needed for local handler
+
+    // The Anchor server does not echo packets back to the sender, and non-hosts
+    // skip ROOM_JOIN entirely (they check !IsHostAuthority()).  So when the host
+    // itself joins a room, no one would ever process its ROOM_JOIN.  Handle it
+    // locally so ROOM_MASTER_ASSIGN and the snapshot delivery flow are triggered.
+    if (IsHostAuthority()) {
+        HandlePacket_RoomJoin(payload);
+    }
 
     SendJsonToRemote(payload);
 }
@@ -55,33 +64,57 @@ void Anchor::HandlePacket_RoomJoin(nlohmann::json payload) {
     const std::string roomKey      = payload["roomKey"].get<std::string>();
     const uint32_t    joiningClient = payload["clientId"].get<uint32_t>();
 
-    // Check whether an active room master already exists for this room.
-    bool masterOnline = false;
+    const s16 joinSceneNum = payload.value("sceneNum", (s16)SCENE_ID_MAX);
+    const s8  joinRoomNum  = (s8)payload.value("roomNum", -1);
+
+    // Check whether an active room master is currently present in this room.
+    // "Online but in a different room" counts as absent — this ensures a
+    // re-entering master triggers the snapshot flow rather than silently
+    // keeping stale authority over a room they left.
+    bool masterInRoom = false;
     auto it = roomAuthority.find(roomKey);
     if (it != roomAuthority.end() && it->second != 0) {
-        masterOnline = clients.contains(it->second) && clients[it->second].online;
-    }
-
-    // The owner always reclaims master when joining a room themselves so that
-    // the admin is never locked out of their own authority.
-    const bool ownerJoining = (joiningClient == ownClientId);
-
-    if (ownerJoining || !masterOnline) {
-        roomAuthority[roomKey] = joiningClient;
-        if (ownerJoining) {
-            SPDLOG_INFO("[Anchor] Room owner reclaimed master: room={}", roomKey);
+        const uint32_t masterId = it->second;
+        if (masterId == ownClientId) {
+            // Host is the master — check against the host's current room.
+            masterInRoom = IsSaveLoaded() && gPlayState &&
+                           gPlayState->sceneNum == joinSceneNum &&
+                           (s8)gPlayState->roomCtx.curRoom.num == joinRoomNum;
         } else {
-            SPDLOG_INFO("[Anchor] Room master assigned: room={} master={}", roomKey, joiningClient);
+            masterInRoom = clients.contains(masterId) && clients[masterId].online &&
+                           clients[masterId].sceneNum == joinSceneNum &&
+                           clients[masterId].curRoomNum == joinRoomNum;
         }
     }
-    // If an active master already exists (and it is not the owner joining),
-    // we still broadcast a confirmation so late joiners learn who the master is.
+
+    if (!masterInRoom) {
+        roomAuthority[roomKey] = joiningClient;
+        SPDLOG_INFO("[Anchor] Room master assigned: room={} master={}", roomKey, joiningClient);
+    }
+
+    // If the joining client IS the current master (they left and re-entered),
+    // transfer mastership to a staying client so the re-entrant receives a
+    // fresh snapshot with the actual room state (killed enemies, BG positions).
+    if (joiningClient == roomAuthority[roomKey]) {
+        for (const auto& [cid, client] : clients) {
+            if (cid == joiningClient) continue;  // skip the re-entering client
+            if (!client.online || !client.isSaveLoaded) continue;
+            if (client.sceneNum == joinSceneNum && client.curRoomNum == joinRoomNum) {
+                roomAuthority[roomKey] = cid;
+                SPDLOG_INFO("[Anchor] Re-entering master: transferred to staying client: room={} newMaster={}", roomKey, cid);
+                break;
+            }
+        }
+    }
 
     nlohmann::json assign;
-    assign["type"]           = ROOM_MASTER_ASSIGN;
-    assign["roomKey"]        = roomKey;
-    assign["masterClientId"] = roomAuthority[roomKey];
-    assign["joiningClientId"] = joiningClient;  // lets the master know who just arrived
+    assign["type"]            = ROOM_MASTER_ASSIGN;
+    assign["roomKey"]         = roomKey;
+    assign["masterClientId"]  = roomAuthority[roomKey];
+    assign["joiningClientId"] = joiningClient;
+    // The server does not echo ROOM_MASTER_ASSIGN back to the sender.
+    // Handle it locally so the host's roomAuthority and snapshot trigger work.
+    HandlePacket_RoomMasterAssign(assign);
     SendJsonToRemote(assign);
 }
 

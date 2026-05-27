@@ -3,6 +3,10 @@
 #include "soh/SohGui/SohGui.hpp"
 #include "soh/SohGui/SohMenu.h"
 #include "soh/util.h"
+#include <algorithm>
+#include <chrono>
+#include <random>
+#include <vector>
 
 namespace SohGui {
 extern std::shared_ptr<SohMenu> mSohMenu;
@@ -467,13 +471,28 @@ void AnchorGameModesMenu(WidgetInfo& info) {
         // Admin-Buttons: Match starten / beenden
         if (!anchor->brMatchActive) {
             if (ImGui::Button("Match starten")) {
-                // Jedem Client (inkl. Host) wird ein einzigartiger Spawn-Index
-                // in Hyrule Field zugewiesen.  8 Spawn-Punkte zyklisch vergeben.
-                nlohmann::json spawnAssignments;
-                int spawnIdx = 0;
-                spawnAssignments[std::to_string(anchor->ownClientId)] = spawnIdx++;
+                // Jedem Client (inkl. Host) wird ein EINDEUTIGER zufaelliger
+                // Spawn-Index zugewiesen (Unique Random Selection / Fisher-Yates).
+                // So startet kein Spieler am selben Punkt.
+                std::vector<uint32_t> playerIds;
+                playerIds.push_back(anchor->ownClientId);
                 for (auto& [cid, _] : anchor->clients) {
-                    spawnAssignments[std::to_string(cid)] = spawnIdx++ % 8;
+                    playerIds.push_back(cid);
+                }
+                // Index-Pool 0..kBrSpawnCount-1; wiederholt zyklisch wenn mehr
+                // Spieler als Spawn-Punkte vorhanden sind.
+                std::vector<int> indexPool;
+                for (int i = 0; i < (int)playerIds.size(); i++) {
+                    indexPool.push_back(i % 5);  // 5 Landmark-Spawn-Punkte
+                }
+                {
+                    std::mt19937 rng(static_cast<uint32_t>(
+                        std::chrono::steady_clock::now().time_since_epoch().count()));
+                    std::shuffle(indexPool.begin(), indexPool.end(), rng);
+                }
+                nlohmann::json spawnAssignments;
+                for (int i = 0; i < (int)playerIds.size(); i++) {
+                    spawnAssignments[std::to_string(playerIds[i])] = indexPool[i];
                 }
                 anchor->SendPacket_BattleRoyaleEvent("MATCH_START", {
                     { "startProtectionSecs", 10 },
