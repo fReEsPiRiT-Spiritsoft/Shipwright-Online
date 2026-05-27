@@ -128,6 +128,10 @@ void Anchor::HandlePacket_EnemyPositionUpdate(nlohmann::json payload) {
                 actor->world.rot.y = rotY;
                 // Keep visual and physical rotation aligned.
                 actor->shape.rot.y = shapeRotY;
+                // Store the authoritative position for the position-corrected update path.
+                // OnBeforeActorUpdate and OnActorUpdate use this to pin world.pos every frame
+                // so colliders register at the correct spot and Z-targeting stays accurate.
+                remoteEnemyPos[actorKey] = actor->world.pos;
 
                 if (health != actor->colChkInfo.health) {
                     actor->colChkInfo.health = health;

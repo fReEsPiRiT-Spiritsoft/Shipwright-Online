@@ -441,20 +441,62 @@ void Anchor::RegisterHooks() {
         }
     });
 
-    // Central enemy AI gate (Phase 2).
-    // For every ACTORCAT_ENEMY and ACTORCAT_BOSS actor, suppress local AI when
-    // the room master is in the same scene+room AND the actor is within the
-    // configured sync radius.  ShouldActorBeNetworkDriven() is the single
-    // decision point — all guards (syncEnemies, IsEnemyAuthority, IsOwnerInSameRoom,
-    // IsActorInsideSyncRadius) are centralised there.
-    // This replaces the former per-ID hooks for EN_DEKUNUTS and EN_DNS, and extends
-    // the same guarantee to every enemy in the game without additional boilerplate.
-    COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
-        Actor* actor = static_cast<Actor*>(refActor);
+    // Position-corrected update (replaces the former full AI block, Phase 2).
+    //
+    // PROBLEM with blocking (ShouldActorUpdate = false):
+    //   The actor's update() never runs, so Collider_UpdateCylinder / CollisionCheck_SetAC
+    //   are never called → the enemy has no registered AC collider → the player's sword
+    //   passes straight through.  focus.pos also stays at the last locally-computed
+    //   position → Z-targeting arrow points to a completely wrong spot.
+    //
+    // SOLUTION — let the update run, but pin the position:
+    //   OnBeforeActorUpdate: overwrite world.pos with the last received network position
+    //     and zero velocity / speedXZ so the actor's own Move calls cannot drift it.
+    //   The update then runs → Collider_UpdateCylinder called at the correct spot →
+    //     sword hits register, Z-targeting reticle is accurate.
+    //   OnActorUpdate: restore world.pos to the stored network value in case the AI
+    //     overwrote it (e.g. pathfinding), and keep focus.pos in sync every frame.
+    COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies || !gPlayState) return;
+        Actor* actor = static_cast<Actor*>(actorRef);
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
-        if (ShouldActorBeNetworkDriven(actor)) {
-            *should = false;
-        }
+        if (!ShouldActorBeNetworkDriven(actor)) return;
+        const std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        auto it = remoteEnemyPos.find(key);
+        if (it == remoteEnemyPos.end()) return; // no network data yet — let first frame run freely
+        // Pin world.pos to the authoritative position before the update touches it.
+        actor->world.pos = it->second;
+        // Zero velocity so Actor_MoveXZGravity / Actor_MoveWithoutGravity can't drift the actor.
+        actor->velocity.x = 0.0f;
+        actor->velocity.y = 0.0f;
+        actor->velocity.z = 0.0f;
+        actor->speedXZ    = 0.0f;
+    });
+
+    // After the actor update ran: restore world.pos from the last network value (the AI
+    // might have overwritten it via pathfinding or movement), and keep focus.pos aligned
+    // so the Z-targeting reticle tracks the enemy's actual synced position every frame.
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || IsEnemyAuthority()) return;
+        if (!roomState.syncEnemies || !gPlayState) return;
+        Actor* actor = static_cast<Actor*>(actorRef);
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        if (!ShouldActorBeNetworkDriven(actor)) return;
+        const std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        auto it = remoteEnemyPos.find(key);
+        if (it == remoteEnemyPos.end()) return;
+        // Restore world.pos — the update may have moved the actor via its own AI.
+        actor->world.pos = it->second;
+        // Keep focus.pos (Z-targeting reticle) at the synced position.
+        actor->focus.pos.x = it->second.x;
+        actor->focus.pos.y = it->second.y + actor->focusYoffset;
+        actor->focus.pos.z = it->second.z;
+        // Zero velocity again so the next frame's pre-update pin finds the actor clean.
+        actor->velocity.x = 0.0f;
+        actor->velocity.y = 0.0f;
+        actor->velocity.z = 0.0f;
+        actor->speedXZ    = 0.0f;
     });
 
     // Central BG-actor freeze gate (Phase 2).
@@ -645,6 +687,7 @@ void Anchor::RegisterHooks() {
         trackedNonAuthEnemyHealth.clear();
         pendingRemoteHealthOverride.clear();
         trackedEnemyPos.clear();
+        remoteEnemyPos.clear();
         trackedEnemyDrawState.clear();
         savedEnemyDrawFuncs.clear();
         trackedBgActors.clear();

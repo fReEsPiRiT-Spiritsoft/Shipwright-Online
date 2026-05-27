@@ -118,6 +118,14 @@ class Anchor : public Network {
     // Entry is erased after one confirmed observation in OnActorUpdate.
     std::unordered_map<std::string, u8> pendingRemoteHealthOverride;
 
+    // Non-authority: last position received from the authority per enemy actor.
+    // Used by the position-corrected update path to:
+    //   1. Pre-set world.pos before the actor update so colliders register at the right spot.
+    //   2. Restore world.pos after the update in case local AI moved the actor.
+    //   3. Sync focus.pos (Z-targeting reticle) every frame.
+    // Cleared on scene change together with the other per-scene maps.
+    std::unordered_map<std::string, Vec3f> remoteEnemyPos;
+
     // Authority: tracks last broadcast position of each enemy so we only send
     // EnemyPositionUpdate when the enemy has actually moved.
     std::unordered_map<std::string, Vec3f> trackedEnemyPos;
