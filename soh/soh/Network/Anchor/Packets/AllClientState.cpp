@@ -5,6 +5,10 @@
 #include "soh/OTRGlobals.h"
 #include "soh/Notification/Notification.h"
 
+extern "C" {
+extern PlayState* gPlayState;
+}
+
 /**
  * ALL_CLIENT_STATE
  *
