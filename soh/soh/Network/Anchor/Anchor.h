@@ -90,6 +90,7 @@ typedef struct {
     u8  syncMinigames;           // 0 = off (default), 1 = broadcast minigame state/score/end events
     u8  syncEpona;               // 0 = off (default), 1 = spawn phantom horse under remote riders
     u8  battleRoyaleMode;        // 0 = off (default), 1 = on (PvP, kill tracking, wanted system)
+    u8  brFreshStart;            // 0 = off (default), 1 = reset inventory/health/rupees on MATCH_START
 } RoomState;
 
 class Anchor : public Network {
@@ -414,6 +415,10 @@ class Anchor : public Network {
     // reporting (eliminated players must not send further PLAYER_KILLED events
     // or deal PvP damage).  Reset on MATCH_START.
     bool                              brEliminated  = false;
+    // Alive/dead transition tracker for the kill-detection hook.  Initialized to
+    // true and reset on every MATCH_START so a player who died at the end of the
+    // previous match does not trigger a spurious PLAYER_KILLED on rematch.
+    bool                              brWasAlive    = true;
     // Deadline until which PvP damage is suppressed after MATCH_START.
     // Gives all players time to orient themselves before the fight begins.
     // Zero-initialised → no protection active (before first match).

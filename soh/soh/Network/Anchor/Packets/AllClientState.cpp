@@ -74,5 +74,51 @@ void Anchor::HandlePacket_AllClientState(nlohmann::json payload) {
     // that a client connected or disconnected.
     ElectNewHostIfNeeded();
 
+    // Room-Master-Nachfolge: Wenn der Host bemerkt, dass ein Raum-Master offline
+    // gegangen ist, wird automatisch ein Ersatz-Client bestimmt und per
+    // ROOM_MASTER_ASSIGN an alle Clients gesendet.  Dadurch bleibt Gegner- und
+    // BG-Sync auch dann aktiv, wenn der bisherige Room-Master die Szene verlässt
+    // oder die Verbindung verliert.
+    if (IsHostAuthority()) {
+        // Aenderungen sammeln und erst danach auf roomAuthority anwenden,
+        // um Iterator-Invalidierung waehrend der Iteration zu vermeiden.
+        struct RoomReassignment { std::string roomKey; uint32_t newMaster; };
+        std::vector<RoomReassignment> reassignments;
+
+        for (const auto& [roomKey, masterClientId] : roomAuthority) {
+            // Prüfen ob der aktuelle Master noch online ist (inkl. Host selbst).
+            bool masterOnline = (masterClientId == ownClientId);
+            if (!masterOnline) {
+                auto mit = clients.find(masterClientId);
+                if (mit != clients.end() && mit->second.online) masterOnline = true;
+            }
+            if (masterOnline) continue;
+
+            // Ersatz suchen: erster online + saveLoaded Client im selben Raum.
+            uint32_t replacement = 0;
+            for (const auto& [cid, client] : clients) {
+                if (!client.online || !client.isSaveLoaded) continue;
+                if (BuildRoomKey((s16)client.sceneNum, (s8)client.curRoomNum) == roomKey) {
+                    replacement = cid;
+                    break;
+                }
+            }
+            if (replacement == 0) continue;  // Niemand im Raum — keine Neuzuweisung moeglich
+
+            reassignments.push_back({ roomKey, replacement });
+        }
+
+        for (const auto& r : reassignments) {
+            roomAuthority[r.roomKey] = r.newMaster;
+            nlohmann::json assign;
+            assign["type"]            = ROOM_MASTER_ASSIGN;
+            assign["roomKey"]         = r.roomKey;
+            assign["masterClientId"]  = r.newMaster;
+            assign["joiningClientId"] = 0u;
+            SendJsonToRemote(assign);
+            SPDLOG_INFO("[Anchor] Raum-Master-Nachfolge: room={} neuerMaster={}", r.roomKey, r.newMaster);
+        }
+    }
+
     shouldRefreshActors = true;
 }

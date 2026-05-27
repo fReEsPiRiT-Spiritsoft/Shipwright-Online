@@ -335,6 +335,7 @@ void AnchorGameModesMenu(WidgetInfo& info) {
         ImGui::Text("Minigame Sync:           %s", yesno(rs.syncMinigames));
         ImGui::Text("Epona / Horse Sync:      %s", yesno(rs.syncEpona));
         ImGui::Text("Battle Royale Mode:      %s", yesno(rs.battleRoyaleMode));
+        ImGui::Text("BR Fresh Start:          %s", yesno(rs.brFreshStart));
         return;
     }
 
@@ -445,6 +446,21 @@ void AnchorGameModesMenu(WidgetInfo& info) {
             ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "● Match laeuft");
         } else {
             ImGui::TextDisabled("● Kein aktives Match");
+        }
+        ImGui::Spacing();
+
+        // Gleichstart-Option
+        if (UIWidgets::CVarCheckbox(
+                "Gleichstart (Fresh Start)", CVAR_REMOTE_ANCHOR("RoomSettings.BrFreshStart"),
+                UIWidgets::CheckboxOptions()
+                    .DefaultValue(false)
+                    .Color(THEME_COLOR)
+                    .Tooltip(
+                        "ON:  Beim Match-Start wird das Inventar aller Spieler geleert,\n"
+                        "     Herzen auf 3 Container und Rupien auf 0 gesetzt.\n"
+                        "     Kisten-Flags werden zurückgesetzt – Items koennen neu geholt werden.\n\n"
+                        "OFF: Jeder Spieler startet mit seinem aktuellen Fortschritt (Default)."))) {
+            anchor->SendPacket_UpdateRoomState();
         }
         ImGui::Spacing();
 

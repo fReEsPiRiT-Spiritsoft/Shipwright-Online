@@ -182,6 +182,7 @@ void SohMenu::AddMenuNetwork() {
                                            "rooms\", so they don't need to be killed to complete these rooms."));
     path.sidebarName = "Anchor";
     AddSidebarEntry("Network", path.sidebarName, 2);
+    AddSidebarEntry("Network", "Game Modes", 1);
 }
 
 } // namespace SohGui

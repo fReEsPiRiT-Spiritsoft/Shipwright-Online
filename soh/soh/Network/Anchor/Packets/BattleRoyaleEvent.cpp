@@ -131,11 +131,31 @@ void Anchor::HandlePacket_BattleRoyaleEvent(nlohmann::json payload) {
         wantedClients.clear();
         brMatchActive = true;
         brEliminated  = false;
+        // Alive-Tracking zurücksetzen: verhindert Fehl-Trigger nach Rematch wenn
+        // der Spieler am Ende des vorherigen Matches noch tot war.
+        brWasAlive    = true;
 
         // Startschutz: PvP wird fuer die ersten N Sekunden nach Match-Start gesperrt,
         // damit alle Spieler Zeit haben, sich nach dem Spawn zu orientieren.
         const int protSecs     = payload.value("startProtectionSecs", 10);
         brStartProtectionUntil = Clock::now() + std::chrono::seconds(protSecs);
+
+        // ── Gleichstart (Fresh Start) ─────────────────────────────────────────
+        // Wenn brFreshStart gesetzt ist, werden Inventar, Herzen (3 Container)
+        // und Rupien aller Spieler beim Match-Start zurückgesetzt.  So starten
+        // alle Teilnehmer unter identischen Bedingungen.
+        if (roomState.brFreshStart && IsSaveLoaded() && gPlayState) {
+            for (int s = 0; s < 24; s++) {
+                gSaveContext.inventory.items[s] = ITEM_NONE;
+            }
+            gSaveContext.healthCapacity = 3 * 0x10;
+            gSaveContext.health         = 3 * 0x10;
+            gSaveContext.rupees         = 0;
+            for (int i = 0; i < 124; i++) {
+                gSaveContext.sceneFlags[i].chest = 0;
+            }
+            SPDLOG_INFO("[Anchor:BR] FreshStart: Inventar, Herzen und Rupien zurückgesetzt.");
+        }
 
         // ── Spawn-Teleport nach Hyrule Field ─────────────────────────────────
         // Der Host weist jedem Client per spawnAssignments einen Spawn-Index zu

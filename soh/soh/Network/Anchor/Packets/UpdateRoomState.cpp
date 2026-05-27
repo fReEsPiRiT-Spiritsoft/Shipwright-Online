@@ -35,6 +35,7 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["syncMinigames"]     = 0;
         payload["syncEpona"]         = 0;
         payload["battleRoyaleMode"] = 0;
+        payload["brFreshStart"]     = 0;
     } else {
         payload["pvpMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PvpMode"), 1);
         payload["showLocationsMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.ShowLocationsMode"), 1);
@@ -51,6 +52,7 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["syncMinigames"]         = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncMinigames"),     1);
         payload["syncEpona"]             = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEpona"),         1);
         payload["battleRoyaleMode"]      = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.BattleRoyaleMode"),   0);
+        payload["brFreshStart"]          = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.BrFreshStart"),       0);
     }
 
     return payload;
@@ -87,4 +89,5 @@ void Anchor::HandlePacket_UpdateRoomState(nlohmann::json payload) {
     roomState.syncMinigames         = payload["state"].value("syncMinigames",         (u8)1);
     roomState.syncEpona             = payload["state"].value("syncEpona",             (u8)1);
     roomState.battleRoyaleMode      = payload["state"].value("battleRoyaleMode",      (u8)0);
+    roomState.brFreshStart          = payload["state"].value("brFreshStart",          (u8)0);
 }

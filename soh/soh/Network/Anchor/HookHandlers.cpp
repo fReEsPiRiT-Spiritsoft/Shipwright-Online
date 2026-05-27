@@ -197,6 +197,7 @@ void Anchor::RegisterHooks() {
         // Battle Royale: erster Ganondorf-Sieg = Match-Sieg.
         // Der lokale Spieler sendet MATCH_END mit sich selbst als Sieger.
         if (roomState.battleRoyaleMode && brMatchActive) {
+            brMatchActive = false;  // Doppel-Trigger verhindern (z.B. Ganon-Neustart)
             SPDLOG_INFO("[Anchor:BR] Ganondorf besiegt! Match-Sieg fuer Client {}", ownClientId);
             SendPacket_BattleRoyaleEvent("MATCH_END", { { "winnerClientId", ownClientId } });
         }
@@ -452,6 +453,23 @@ void Anchor::RegisterHooks() {
         Actor* actor = static_cast<Actor*>(refActor);
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
         if (ShouldActorBeNetworkDriven(actor)) {
+            *should = false;
+        }
+    });
+
+    // Central BG-actor freeze gate (Phase 2).
+    // Suppresses the native Actor_Update for moving BG/Prop actors once the
+    // first keyframe has been received (bgActorKeyframeTarget is populated).
+    // Before the first keyframe arrives the native update still runs so the
+    // actor initialises to its correct starting state.
+    // Flag-trigger BG actors (Breakwall, Bombiwa, …) never receive keyframes
+    // and are therefore never frozen here — their existing explicit hooks handle them.
+    COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
+        Actor* actor = static_cast<Actor*>(refActor);
+        if (actor->category != ACTORCAT_BG && actor->category != ACTORCAT_PROP) return;
+        if (!roomState.syncBGObjects || IsEnemyAuthority() || !gPlayState) return;
+        const std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        if (bgActorKeyframeTarget.count(key)) {
             *should = false;
         }
     });
@@ -1390,7 +1408,12 @@ void Anchor::RegisterHooks() {
             nlohmann::json data;
             data["minigameId"] = (int)curState;
             data["score"]      = 0;
-            SendPacket_RoomEvent("MINIGAME_START", "minigame_start", data, /*streaming=*/true);
+            // Minigame-ID 1 = Gerudo Horseback Archery: erfordert Epona-Sync
+            // damit Remote-Spieler sehen, dass der Room-Master auf einem Pferd sitzt.
+            // Ohne syncEpona das Event nicht senden — kein funktionierender Sync moeglich.
+            if (curState != 1 || roomState.syncEpona) {
+                SendPacket_RoomEvent("MINIGAME_START", "minigame_start", data, /*streaming=*/true);
+            }
 
         } else if (lastMinigameState != 0 && curState == 0) {
             // active → 0: minigame ended.  Send final score so clients can apply
@@ -1439,17 +1462,18 @@ void Anchor::RegisterHooks() {
         if (!brMatchActive)               return;  // kein aktives Match, kein Kill
         if (brEliminated)                 return;  // bereits eliminiert, kein doppeltes PLAYER_KILLED
         if (Clock::now() < brStartProtectionUntil) return;  // Startschutz laeuft noch
-        if (!roomState.pvpMode)           return;  // BR ohne PvP ergibt keinen Kill
+        // pvpMode=0 blockiert Kills nur ausserhalb des BR (BR impliziert PvP).
+        if (!roomState.pvpMode && !roomState.battleRoyaleMode) return;
         if (lastPvpAttackerClientId == 0) return;  // kein ausstehender Kill zu melden
 
         Player* player = GET_PLAYER(gPlayState);
         if (!player) return;
 
-        // Statische bool verfolgt den Alive/Dead-Uebergang zwischen Frames.
-        static bool wasAlive = true;
-        const bool  isDead   = (player->stateFlags1 & PLAYER_STATE1_DEAD) != 0;
+        // brWasAlive (Member-Variable) verfolgt den Alive/Dead-Uebergang.
+        // Wird auf MATCH_START zurückgesetzt, damit ein Rematch sauber beginnt.
+        const bool isDead = (player->stateFlags1 & PLAYER_STATE1_DEAD) != 0;
 
-        if (wasAlive && isDead) {
+        if (brWasAlive && isDead) {
             // Übergang alive → dead mit bekanntem PvP-Angreifer: Kill melden.
             // Inventar-Snapshot mitschicken, damit der Host lootbare Items auswählen kann.
             nlohmann::json victimInventory = nlohmann::json::array();
@@ -1466,7 +1490,7 @@ void Anchor::RegisterHooks() {
             lastPvpAttackerClientId = 0;       // Attribution zurücksetzen
         }
 
-        wasAlive = !isDead;
+        brWasAlive = !isDead;
     });
 
     // ── Phase 6b: Battle Royale — Wanted-NPC-Aggro ───────────────────────────

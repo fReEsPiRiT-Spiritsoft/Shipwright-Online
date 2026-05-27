@@ -311,8 +311,10 @@ jobs:
         cmake -S . -B build-windows -G Ninja -DCMAKE_MAKE_PROGRAM=ninja -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DBUILD_REMOTE_CONTROL=1
         cmake --build build-windows --config Release --parallel 10
 
-        (cd build-windows && cpack)
-        mv _packages/*.zip _packages/soh-windows.zip
+        Push-Location build-windows
+        cpack
+        Pop-Location
+        Move-Item -Path "_packages/*.zip" -Destination "_packages/soh-windows.zip" -Force
     - name: Unzip package
       run: Expand-Archive -Path _packages/soh-windows.zip -DestinationPath soh-windows
     - name: Upload build
