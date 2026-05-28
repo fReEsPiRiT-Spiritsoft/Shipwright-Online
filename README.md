@@ -6,20 +6,9 @@
 
 ### 📥 Downloads
 
-<a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases/tag/0.1.1">
-  <img src="https://img.shields.io/badge/Linux-Download-blue?style=for-the-badge&logo=linux" alt="Linux Download">
+<a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases">
+  <img src="https://img.shields.io/badge/Linux-Download-blue?style=for-the-badge&logo=linux" alt="DOWNLOAD>
 </a>
-</b>
-<a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases/tag/0.1.1.win">
-  <img src="https://img.shields.io/badge/Windows-Download-brightgreen?style=for-the-badge&logo=windows" alt="Windows Download">
-</a>
-</b>
-<a href="#">
-  <img src="https://img.shields.io/badge/MAC-Ausstehend-lightgrey?style=for-the-badge&logo=apple" alt="Mac Ausstehend">
-</a>
-
-#
-<img width="1756" height="592" alt="soH logo" src="https://github.com/user-attachments/assets/c4e2d146-0f84-4cb8-aff2-dcfc9d52bd06" />
 
 
 I am trying to make a server/client version of SoH to fully synchronize the co-op game experience.
