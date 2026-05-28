@@ -97,6 +97,9 @@ extern "C" void OTRMessage_Init() {
         auto file2 =
             std::static_pointer_cast<SOH::Text>(Ship::Context::GetInstance()->GetResourceManager()->LoadResource(
                 "text/staff_message_data_static/staff_message_data_static"));
+        if (file2 == nullptr) {
+            return;
+        }
         // OTRTODO: Should not be malloc'ing here. It's fine for now since we check that the message table is already
         // null.
         sStaffMessageEntryTablePtr = (MessageTableEntry*)malloc(sizeof(MessageTableEntry) * file2->messages.size());
