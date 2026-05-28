@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/MAC-Ausstehend-lightgrey?style=for-the-badge&logo=apple" alt="Mac Ausstehend">
 </a>
 
-
+#
 <img width="1756" height="592" alt="soH logo" src="https://github.com/user-attachments/assets/c4e2d146-0f84-4cb8-aff2-dcfc9d52bd06" />
 
 
