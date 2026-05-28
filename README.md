@@ -7,7 +7,7 @@
 ### 📥 Downloads
 
 <a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases">
-  <img src="https://img.shields.io/badge/Linux-Download-blue?style=for-the-badge&logo=linux" alt="DOWNLOAD>
+  <img src="https://img.shields.io/badge/DOWNLOADS-darkgray?style=for-the-badge" alt="DOWNLOAD>
 </a>
 
 
