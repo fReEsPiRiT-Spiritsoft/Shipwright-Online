@@ -30,6 +30,7 @@ extern "C" {
 #include "src/overlays/actors/ovl_En_Door/z_en_door.h"
 #include "src/overlays/actors/ovl_En_Si/z_en_si.h"
 #include "src/overlays/actors/ovl_En_Sw/z_en_sw.h"
+#include "src/overlays/actors/ovl_En_Ru1/z_en_ru1.h"
 #include "src/overlays/actors/ovl_Item_B_Heart/z_item_b_heart.h"
 #include "src/overlays/actors/ovl_Obj_Bombiwa/z_obj_bombiwa.h"
 #include "src/overlays/actors/ovl_Obj_Hamishi/z_obj_hamishi.h"
@@ -506,15 +507,25 @@ void Anchor::RegisterHooks() {
     });
 
     // Central BG-actor freeze gate (Phase 2).
-    // Suppresses the native Actor_Update for moving BG/Prop actors once the
-    // first keyframe has been received (bgActorKeyframeTarget is populated).
-    // Before the first keyframe arrives the native update still runs so the
-    // actor initialises to its correct starting state.
-    // Flag-trigger BG actors (Breakwall, Bombiwa, …) never receive keyframes
-    // and are therefore never frozen here — their existing explicit hooks handle them.
+    // Suppresses the native Actor_Update for moving ACTORCAT_BG actors (platforms,
+    // elevators, doors) once the first keyframe has been received.
+    // ACTORCAT_PROP actors (pots, chests, pushblocks, the Master Sword pedestal)
+    // are intentionally excluded: their update must run so AC colliders are
+    // registered every frame and players can break/interact with them locally.
+    // ACTOR_EN_HORSE (Epona) lives in ACTORCAT_BG but mounting logic must run on
+    // every client, so we never freeze it regardless of keyframe data.
+    // Flag-trigger BG actors (Breakwall, Bombiwa, …) never receive keyframes and
+    // are therefore never frozen here — their existing explicit hooks handle them.
     COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
         Actor* actor = static_cast<Actor*>(refActor);
-        if (actor->category != ACTORCAT_BG && actor->category != ACTORCAT_PROP) return;
+        // Only freeze true moving-platform BG actors.
+        if (actor->category != ACTORCAT_BG) return;
+        // Jabu-Jabu platform logic (Big Octo platform / wobble objects) must run
+        // locally on every client. Freezing this actor suppresses intermediate
+        // boss setup and causes desynced wobble platform states.
+        if (actor->id == ACTOR_BG_BDAN_OBJECTS) return;
+        // Epona must never be frozen — mounting/dismounting must work on all clients.
+        if (actor->id == ACTOR_EN_HORSE) return;
         if (!roomState.syncBGObjects || IsEnemyAuthority() || !gPlayState) return;
         const std::string key = GetActorKey(actor, gPlayState->sceneNum);
         if (bgActorKeyframeTarget.count(key)) {
@@ -735,7 +746,11 @@ void Anchor::RegisterHooks() {
         if (!ownerReachable) return;
 
         Actor* actor = (Actor*)actorRef;
-        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        // Bosses are excluded: their state machines are too tightly coupled
+        // (multi-part kill conditions, special hit flags) for simple damage
+        // forwarding.  Boss hits apply locally; HP is driven downward-only by
+        // the authority's broadcast (see OnActorUpdate HP override below).
+        if (actor->category != ACTORCAT_ENEMY) return;
         if (actor->colChkInfo.damage == 0) return; // no hit this frame
 
         // Only intercept if the enemy is within the sync radius.
@@ -963,6 +978,32 @@ void Anchor::RegisterHooks() {
         SendPacket_BoulderSpawn(actor);
     });
 
+    // Jabu-Jabu special spawn sync: Big Octo / electrified tentacles can be
+    // spawned by local platform scripts or cutscene state. Ensure every client
+    // receives a deterministic spawn event from the room master.
+    COND_HOOK(OnActorSpawn, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (!IsRoomMaster()) return;
+        if (!roomState.syncEnemies) return;
+        if (!IsAnyClientInSameRoom()) return;
+        if (gPlayState->sceneNum != SCENE_JABU_JABU) return;
+
+        Actor* actor = static_cast<Actor*>(actorRef);
+        if (actor->id != ACTOR_EN_BIGOKUTA && actor->id != ACTOR_EN_BX) return;
+
+        nlohmann::json data;
+        data["actorId"] = (int)actor->id;
+        data["params"] = (int)actor->params;
+        data["x"] = actor->world.pos.x;
+        data["y"] = actor->world.pos.y;
+        data["z"] = actor->world.pos.z;
+        data["rotX"] = (int)actor->world.rot.x;
+        data["rotY"] = (int)actor->world.rot.y;
+        data["rotZ"] = (int)actor->world.rot.z;
+
+        SendPacket_RoomEvent("JABU_ACTOR_SPAWN", GetActorKey(actor, gPlayState->sceneNum), data, false);
+    });
+
     // Authority: broadcast enemy deaths so all clients can kill their local copy.
     COND_HOOK(OnActorKill, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !IsEnemyAuthority()) return;
@@ -1009,7 +1050,11 @@ void Anchor::RegisterHooks() {
         if (!gPlayState) return;
 
         Actor* actor = (Actor*)actorRef;
-        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        // Bosses: their death is authoritative on the room master.  The room
+        // master sends ACTOR_KILLED when the boss dies; clients kill their local
+        // copy from that packet.  Sending ROOM_KILL_SYNC from the client for a
+        // boss creates a "already dead" flood loop on the authority — skip it.
+        if (actor->category != ACTORCAT_ENEMY) return;
 
         std::string actorKey = GetActorKey(actor, gPlayState->sceneNum);
         std::string roomKey = std::to_string(gPlayState->sceneNum) + "_" +
@@ -1140,12 +1185,11 @@ void Anchor::RegisterHooks() {
                 lastDayTimeHost = gSaveContext.dayTime;
             }
 
-            // Broadcast to all clients every ~3 seconds (60 frames).
-            static int timeSyncTimer = 0;
-            if (++timeSyncTimer >= 60) {
-                timeSyncTimer = 0;
-                SendPacket_TimeSync();
-            }
+            // Do NOT broadcast time here every frame: syncing every ~1 s
+            // causes the drawbridge and day/night skeletons to jitter visibly
+            // for all clients.  A one-shot sync is sent by
+            // HandlePacket_RoomMasterAssign when a new client enters the room,
+            // which is the only moment accurate resync is needed.
         } else {
             // CLIENT -----------------------------------------------------
             // The host's TIME_SYNC packet sets remoteTimeFrozen and overwrites
@@ -1407,6 +1451,13 @@ void Anchor::RegisterHooks() {
                 break;
             }
         }
+
+        // When our own cutscene ends, tell all clients to force-exit their CS so
+        // they don't stay frozen in the letterbox forever (softlock bug).
+        if (prevCsState != CS_STATE_IDLE && curCsState == CS_STATE_IDLE) {
+            SendPacket_TriggerCutscene(CS_STATE_IDLE);
+        }
+
         prevCsState = curCsState;
     });
     // #endregion
@@ -1414,6 +1465,106 @@ void Anchor::RegisterHooks() {
     // Clear per-frame collectible-spawn tracking used by ENEMY_DROP_ITEM.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
         recentCollectibleSpawns.clear();
+    });
+
+    // ── Ocarina song forwarding ───────────────────────────────────────────────
+    // When a non-room-master plays an ocarina song successfully, the BG/enemy
+    // sync system freezes many of the actors that respond to songs (waterfalls,
+    // Jabu-Jabu, temple triggers).  Forward the song action to the room master
+    // as a ROOM_EVENT so the master can apply it and drive the frozen actors.
+    // The room master's own OnOcarinaSongAction fires locally and is not forwarded
+    // (it would re-enter this hook on the master side).
+    COND_HOOK(OnOcarinaSongAction, isConnected, [&]() {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (IsRoomMaster()) return; // master reacts locally; no forwarding needed
+
+        nlohmann::json data;
+        data["ocarinaMode"]    = (int)gPlayState->msgCtx.ocarinaMode;
+        data["ocarinaAction"]  = (int)gPlayState->msgCtx.ocarinaAction;
+        data["lastPlayedSong"] = (int)gPlayState->msgCtx.lastPlayedSong;
+        SendPacket_RoomEvent("OCARINA_SONG_ACTION", "ocarina_song_action", data, false);
+    });
+
+    // Non-room-master minigame proxy:
+    // Some minigames (notably Zora diving / Lon Lon style counters) are fully
+    // local to the interacting client and do not change the room master's
+    // gSaveContext directly. Forward local state deltas to the room master,
+    // which then emits the canonical MINIGAME_* events for all peers.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (!roomState.syncMinigames) return;
+        if (IsRoomMaster()) return;
+        if (!IsOwnerInSameRoom()) return;
+
+        static s16 lastScene = -1;
+        static s8  lastRoom = -1;
+        static u16 lastState = 0;
+        static u16 lastScore = 0;
+
+        const s16 curScene = gPlayState->sceneNum;
+        const s8  curRoom = gPlayState->roomCtx.curRoom.num;
+        const u16 curState = gSaveContext.minigameState;
+        const u16 curScore = gSaveContext.minigameScore;
+
+        if (curScene != lastScene || curRoom != lastRoom) {
+            lastScene = curScene;
+            lastRoom = curRoom;
+            lastState = curState;
+            lastScore = curScore;
+            return;
+        }
+
+        const bool changed = (curState != lastState) || ((curState != 0) && (curScore != lastScore));
+        if (!changed) return;
+
+        nlohmann::json data;
+        data["minigameId"] = (int)curState;
+        data["score"]      = (int)curScore;
+        SendPacket_RoomEvent("MINIGAME_PROXY_STATE", "minigame_proxy_state", data, /*streaming=*/true);
+
+        lastState = curState;
+        lastScore = curScore;
+    });
+
+    // Ruto carry-state stream:
+    // Ruto's local carry/fall state machine is very sensitive and tied to local
+    // actor update order. We avoid driving her full AI remotely and instead
+    // stream the carry pose/position so all clients see coherent pickup movement.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (gPlayState->sceneNum != SCENE_JABU_JABU) return;
+        if (!IsAnyClientInSameRoom()) return;
+
+        Player* player = GET_PLAYER(gPlayState);
+        if (!player) return;
+
+        const bool carryingRuto =
+            (player->heldActor != nullptr) &&
+            (player->heldActor->id == ACTOR_EN_RU1) &&
+            ((player->stateFlags1 & PLAYER_STATE1_CARRYING_ACTOR) != 0);
+
+        static bool lastCarryingRuto = false;
+        static u32  lastSentFrame = 0;
+        const u32 curFrame = gPlayState->state.frames;
+
+        // Send on state change immediately; while carrying, refresh at 10 Hz.
+        const bool periodicDue = carryingRuto && (curFrame - lastSentFrame >= 6);
+        if (!periodicDue && carryingRuto == lastCarryingRuto) return;
+
+        nlohmann::json data;
+        data["carrying"] = carryingRuto;
+
+        if (carryingRuto) {
+            Actor* held = player->heldActor;
+            data["x"] = held->world.pos.x;
+            data["y"] = held->world.pos.y;
+            data["z"] = held->world.pos.z;
+            data["rotY"] = (int)held->world.rot.y;
+        }
+
+        SendPacket_RoomEvent("RUTO_CARRY_STATE", "ruto_carry_state", data, /*streaming=*/true);
+        lastCarryingRuto = carryingRuto;
+        lastSentFrame = curFrame;
     });
 
     // ── Phase 6a: Minigame state monitoring ──────────────────────────────────

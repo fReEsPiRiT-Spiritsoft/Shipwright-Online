@@ -83,7 +83,20 @@ void Anchor::HandlePacket_ActorStateUpdate(nlohmann::json payload) {
         Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
         while (actor != nullptr) {
             if (GetActorKey(actor, sceneNum) == actorKey) {
-                actor->colChkInfo.health = health;
+                // For bosses, apply HP only when it decreases (min-merge): local
+                // hits already reduced HP locally; restoring to a higher authority
+                // value would create an unkillable loop when multi-part boss phases
+                // haven't synced yet.  Always apply HP=0 so the death transition
+                // propagates correctly.
+                if (cat == ACTORCAT_BOSS) {
+                    if (health < actor->colChkInfo.health || health == 0) {
+                        actor->colChkInfo.health = health;
+                        pendingRemoteHealthOverride[actorKey] = health;
+                    }
+                } else {
+                    actor->colChkInfo.health = health;
+                    pendingRemoteHealthOverride[actorKey] = health;
+                }
                 // Override position so both clients see the enemy in the same place
                 if (hasPos) {
                     actor->world.pos.x = posX;
@@ -92,9 +105,6 @@ void Anchor::HandlePacket_ActorStateUpdate(nlohmann::json payload) {
                     actor->world.rot.y = rotY;
                     actor->shape.rot.y = shapeRotY;
                 }
-                // Mark this as a remote update so OnActorUpdate on the non-authority
-                // won't forward the change back to the owner as a local hit.
-                pendingRemoteHealthOverride[actorKey] = health;
                 return;
             }
             actor = actor->next;

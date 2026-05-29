@@ -140,6 +140,12 @@ void Anchor::HandlePacket_RoomMasterAssign(nlohmann::json payload) {
         if (roomKey == GetCurrentRoomKey()) {
             SPDLOG_INFO("[Anchor] RoomMasterAssign: I am master, triggering snapshot for client {}", joiningClientId);
             SendPacket_RoomSnapshot(joiningClientId);
+            // One-shot time sync so the new client's clock starts from the same
+            // point as ours.  This prevents drawbridge/skeleton jitter that
+            // occurred when time was broadcast every ~60 frames.
+            if (roomState.syncDayTime && IsSaveLoaded()) {
+                SendPacket_TimeSync();
+            }
         }
     }
 }

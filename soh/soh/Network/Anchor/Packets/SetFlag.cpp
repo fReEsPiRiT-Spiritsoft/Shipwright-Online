@@ -10,6 +10,62 @@ extern "C" {
 extern PlayState* gPlayState;
 }
 
+// When the Big Octo "kidnapped Ruto" flag (INFTABLE_146) arrives on a client
+// that is currently inside Jabu-Jabu, the platform actor's Init has already
+// run without the flag being set, so the Big Octo was never spawned as the
+// platform's child.  Detect this and spawn it now so all clients see the fight.
+static void Anchor_SpawnJabuBigOcto() {
+    if (!gPlayState || gPlayState->sceneNum != SCENE_JABU_JABU) {
+        return;
+    }
+    if (Anchor::Instance->IsEnemyAuthority()) {
+        return; // master spawns it naturally through its own state machine
+    }
+
+    Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_BG].head;
+    while (actor != nullptr) {
+        // params==0 identifies the OctoPlatform variant of BG_BDAN_OBJECTS
+        if (actor->id == ACTOR_BG_BDAN_OBJECTS && actor->params == 0) {
+            if (actor->child == nullptr && !Flags_GetClear(gPlayState, actor->room)) {
+                Actor_SpawnAsChild(&gPlayState->actorCtx, actor, gPlayState,
+                                   ACTOR_EN_BIGOKUTA,
+                                   actor->home.pos.x, actor->home.pos.y, actor->home.pos.z,
+                                   0, (s16)(actor->shape.rot.y + 0x8000), 0, 3);
+            }
+            break;
+        }
+        actor = actor->next;
+    }
+}
+
+static void Anchor_ApplyKingZoraMovedFallback() {
+    if (!gPlayState || gPlayState->sceneNum != SCENE_ZORAS_DOMAIN) {
+        return;
+    }
+
+    Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_NPC].head;
+    while (actor != nullptr) {
+        if (actor->id == ACTOR_EN_KZ) {
+            // En_Kz encodes path index in params high byte and moves to the
+            // last point when EVENTCHKINF_KING_ZORA_MOVED is set.
+            if ((actor->params & 0xFF00) == 0xFF00) {
+                return;
+            }
+
+            Path* path = &gPlayState->setupPathList[(actor->params & 0xFF00) >> 8];
+            Vec3s* points = SEGMENTED_TO_VIRTUAL(path->points);
+            Vec3s* lastPoint = points + (path->count - 1);
+
+            actor->world.pos.x = lastPoint->x;
+            actor->world.pos.y = lastPoint->y;
+            actor->world.pos.z = lastPoint->z;
+            actor->home.pos = actor->world.pos;
+            return;
+        }
+        actor = actor->next;
+    }
+}
+
 /**
  * SET_FLAG
  *
@@ -58,6 +114,24 @@ void Anchor::HandlePacket_SetFlag(nlohmann::json payload) {
             Inventory_HasSpecificBottle(ITEM_LETTER_RUTO)) {
             Inventory_ReplaceItem(gPlayState, ITEM_LETTER_RUTO, ITEM_BOTTLE);
         }
+
+        if (flagType == FLAG_EVENT_CHECK_INF && flag == EVENTCHKINF_KING_ZORA_MOVED) {
+            Anchor_ApplyKingZoraMovedFallback();
+        }
+
+        // Diving minigame completion can set the event flag without always
+        // traveling through a normal item-give callback on remote peers.
+        // Ensure the silver scale upgrade is present when this flag arrives.
+        if (flagType == FLAG_EVENT_CHECK_INF && flag == EVENTCHKINF_OBTAINED_SILVER_SCALE &&
+            CUR_UPG_VALUE(UPG_SCALE) < 1) {
+            Inventory_ChangeUpgrade(UPG_SCALE, 1);
+        }
+
+        // When Ruto is kidnapped by Big Octo (INFTABLE_146), spawn the Big Octo
+        // on any non-authority client that is currently inside Jabu-Jabu.
+        if (flagType == FLAG_INF_TABLE && flag == INFTABLE_146) {
+            Anchor_SpawnJabuBigOcto();
+        }
     } else {
         // Special case: Ignore water temple water level flags, stored at 0x1C, 0x1D, 0x1E.
         if (sceneNum == SCENE_WATER_TEMPLE && flagType == FLAG_SCENE_SWITCH &&
@@ -98,6 +172,21 @@ void Anchor::FlushPhysicalFlagQueue() {
             if (f.flagType == FLAG_EVENT_CHECK_INF && f.flag == EVENTCHKINF_KING_ZORA_MOVED &&
                 Inventory_HasSpecificBottle(ITEM_LETTER_RUTO)) {
                 Inventory_ReplaceItem(gPlayState, ITEM_LETTER_RUTO, ITEM_BOTTLE);
+            }
+
+            if (f.flagType == FLAG_EVENT_CHECK_INF && f.flag == EVENTCHKINF_KING_ZORA_MOVED) {
+                Anchor_ApplyKingZoraMovedFallback();
+            }
+
+            // Keep diving reward consistent when the completion flag was queued.
+            if (f.flagType == FLAG_EVENT_CHECK_INF && f.flag == EVENTCHKINF_OBTAINED_SILVER_SCALE &&
+                CUR_UPG_VALUE(UPG_SCALE) < 1) {
+                Inventory_ChangeUpgrade(UPG_SCALE, 1);
+            }
+
+            // Big Octo kidnap flag queued while physicalItemExchange was active.
+            if (f.flagType == FLAG_INF_TABLE && f.flag == INFTABLE_146) {
+                Anchor_SpawnJabuBigOcto();
             }
         } else {
             // Skip the same temple-specific flags that HandlePacket_SetFlag ignores.

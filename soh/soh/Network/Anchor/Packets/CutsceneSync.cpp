@@ -41,17 +41,24 @@ void Anchor::HandlePacket_TriggerCutscene(nlohmann::json payload) {
     if (!IsSaveLoaded() || !gPlayState) return;
     if (!roomState.syncCutscenes || !roomState.syncEnemies) return;
 
-    // Only apply if we are still idle (don't restart a CS already running).
-    if (gPlayState->csCtx.state != CS_STATE_IDLE) return;
-
     // Sanity: sender must be in the same scene.
     s16 senderScene = payload.value("sceneNum", (s16)-1);
     if (senderScene != (s16)gPlayState->sceneNum) return;
 
     u8 csState = payload.value("csState", (u8)CS_STATE_IDLE);
-    if (csState == CS_STATE_SKIPPABLE_INIT) {
+
+    if (csState == CS_STATE_IDLE) {
+        // Sender's cutscene ended — force-exit ours if we are still stuck in one.
+        // func_8006450C cleanly resets csCtx (state → IDLE, unk_0C → 0).
+        if (gPlayState->csCtx.state != CS_STATE_IDLE) {
+            func_8006450C(gPlayState, &gPlayState->csCtx);
+        }
+    } else if (csState == CS_STATE_SKIPPABLE_INIT) {
+        // Only start if we are currently idle (don't restart a CS already running).
+        if (gPlayState->csCtx.state != CS_STATE_IDLE) return;
         func_80064520(gPlayState, &gPlayState->csCtx);
     } else if (csState == CS_STATE_UNSKIPPABLE_INIT) {
+        if (gPlayState->csCtx.state != CS_STATE_IDLE) return;
         func_80064534(gPlayState, &gPlayState->csCtx);
     }
 }

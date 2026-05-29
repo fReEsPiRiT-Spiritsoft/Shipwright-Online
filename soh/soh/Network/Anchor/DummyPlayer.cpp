@@ -206,8 +206,11 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
                                       0, actor->shape.rot.y, 0,
                                       /*params=*/0);
                 if (phantom) {
-                    // Silence AI completely — we drive the position ourselves.
-                    phantom->update = nullptr;
+                    // Keep native EnHorseNormal_Update running — it advances the
+                    // Skin/skelAnime each frame.  Nulling update here leaves the
+                    // skeleton stale and causes Skin_UpdateVertices to SIGSEGV after
+                    // ~30 s when the bone matrices overflow.  Position is re-pinned
+                    // below every frame, so the update merely warms the animation.
                     // Persistent across room-boundary draws (same as DummyPlayer).
                     phantom->room   = -1;
                     SPDLOG_INFO("[Anchor:Horse] Spawned phantom horse for client {} (actor={})",
