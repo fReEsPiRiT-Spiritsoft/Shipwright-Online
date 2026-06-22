@@ -1,4 +1,5 @@
 #include "soh/Network/Anchor/Anchor.h"
+#include "soh/Network/Anchor/BossSync/BossSyncDispatch.h"
 #include "soh/Notification/Notification.h"
 #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
 #include <nlohmann/json.hpp>
@@ -9,6 +10,12 @@ extern "C" {
 #include "functions.h"
 #include "src/overlays/actors/ovl_En_Ru1/z_en_ru1.h"
 extern PlayState* gPlayState;
+}
+
+namespace {
+bool IsBossSyncEventType(const std::string& eventType) {
+    return eventType.rfind("BOSS_", 0) == 0;
+}
 }
 
 /**
@@ -60,6 +67,11 @@ void Anchor::SendPacket_RoomEvent(const std::string& eventType,
                                   bool streaming) {
     if (!IsSaveLoaded() || !gPlayState) return;
 
+    const bool isBossEvent = IsBossSyncEventType(eventType);
+    if (isBossEvent && !IsRoomMaster()) {
+        return;
+    }
+
     nlohmann::json payload;
     payload["type"]      = ROOM_EVENT;
     payload["sceneNum"]  = gPlayState->sceneNum;
@@ -68,6 +80,12 @@ void Anchor::SendPacket_RoomEvent(const std::string& eventType,
     payload["eventKey"]  = eventKey;
     if (!eventData.empty()) {
         payload["eventData"] = eventData;
+    }
+    if (isBossEvent) {
+        // Boss events are ordered via monotonic sequence. If caller did not
+        // supply one, use current frame as stable local fallback.
+        payload["seq"] = eventData.value("seq", (uint32_t)gPlayState->state.frames);
+        payload["masterFrame"] = eventData.value("masterFrame", (uint32_t)gPlayState->state.frames);
     }
     if (streaming) {
         // streaming=true: receiver skips idempotency check so every update is applied.
@@ -97,6 +115,7 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
     const nlohmann::json eventData  = payload.value("eventData", nlohmann::json{});
 
     const bool        isStreaming   = payload.value("streaming", false);
+    const bool        isBossEvent   = IsBossSyncEventType(eventType);
 
     if (packetScene < 0 || packetRoom < 0 || eventType.empty() || eventKey.empty()) {
         SPDLOG_WARN("[Anchor:EventSync] RECV malformed ROOM_EVENT — ignored");
@@ -106,12 +125,29 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
     // Only process events for the current scene.
     if (packetScene != gPlayState->sceneNum) return;
 
+    if (isBossEvent && !roomState.syncEnemies) return;
+
+    if (isBossEvent && payload.contains("clientId")) {
+        const uint32_t senderClientId = payload.value("clientId", 0u);
+        const std::string roomKey = BuildRoomKey(packetScene, (s8)packetRoom);
+        uint32_t roomMasterId = roomState.ownerClientId;
+        auto roomIt = roomAuthority.find(roomKey);
+        if (roomIt != roomAuthority.end() && roomIt->second != 0) {
+            roomMasterId = roomIt->second;
+        }
+        if (senderClientId != 0 && roomMasterId != 0 && senderClientId != roomMasterId) {
+            SPDLOG_WARN("[Anchor:BossSync] Ignore boss event from non-master sender={} expectedMaster={} type={}",
+                        senderClientId, roomMasterId, eventType);
+            return;
+        }
+    }
+
     // Idempotency check (skipped for streaming events like MINIGAME_SCORE).
     const std::string dedupKey = std::to_string(packetScene) + "_" +
                                  std::to_string(packetRoom)  + "_" +
                                  eventType                   + "_" +
                                  eventKey;
-    if (!isStreaming) {
+    if (!isStreaming && !isBossEvent) {
         if (processedRoomEvents.count(dedupKey)) {
             // Duplicate delivery — silently drop.
             return;
@@ -122,6 +158,47 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
     if (!isStreaming) {
         SPDLOG_INFO("[Anchor:EventSync] RECV {} | key={} | scene=0x{:02x} room={}",
                     eventType, eventKey, (int)packetScene, packetRoom);
+    }
+
+    if (isBossEvent) {
+        std::string bossActorKey = eventData.value("bossActorKey", std::string(""));
+        if (bossActorKey.empty()) {
+            bossActorKey = eventKey;
+        }
+
+        uint32_t seq = payload.value("seq", eventData.value("seq", (uint32_t)0));
+        uint32_t masterFrame = payload.value("masterFrame", eventData.value("masterFrame", (uint32_t)0));
+
+        const std::string roomBossKey = BuildRoomKey(packetScene, (s8)packetRoom) + "_" + bossActorKey;
+        // Sequence dedup: seq==0 (frame-0 edge case) counts as seq=1 to prevent bypass.
+        // Any event at frame 0 gets treated as strictly ordered sequence 1.
+        const uint32_t effectiveSeq = (seq == 0) ? 1u : seq;
+        {
+            uint32_t& lastSeq = lastBossEventSeqByKey[roomBossKey];
+            if (effectiveSeq <= lastSeq) {
+                return;
+            }
+            lastSeq = effectiveSeq;
+        }
+
+        nlohmann::json& state = bossSnapshotStateByKey[roomBossKey];
+        state["bossActorKey"] = bossActorKey;
+        state["sceneNum"] = packetScene;
+        state["roomNum"] = packetRoom;
+        state["lastEventType"] = eventType;
+        state["lastSeq"] = seq;
+        state["masterFrame"] = masterFrame;
+        if (eventData.contains("phaseId"))  state["phaseId"] = eventData["phaseId"];
+        if (eventData.contains("subState")) state["subState"] = eventData["subState"];
+        if (eventData.contains("invuln"))   state["invuln"] = eventData["invuln"];
+        if (eventData.contains("weakpointMask")) state["weakpointMask"] = eventData["weakpointMask"];
+        state["lateJoinCanSkipIntro"] = eventData.value("lateJoinCanSkipIntro", true);
+
+        const s16 bossActorId = (s16)eventData.value("bossActorId", (int)-1);
+        bool adapterHandled = false;
+        if (bossActorId >= 0) {
+            adapterHandled = AnchorBossSync::ApplyBossEvent(gPlayState, packetScene, bossActorId, payload);
+        }
     }
 
     // ── Dispatch per event type ──────────────────────────────────────────────
@@ -282,6 +359,63 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         gPlayState->msgCtx.ocarinaAction  = remoteAction;
         gPlayState->msgCtx.lastPlayedSong = remoteSong;
         GameInteractor_ExecuteOnOcarinaSongAction();
+
+    } else if (eventType == "BOSS_DEATH_COMMIT") {
+        // Generic fallback: only runs if no boss adapter handled the event.
+        // Adapters that implement ApplyEvent for BOSS_DEATH_COMMIT take priority
+        // to avoid double Actor_Kill (first from adapter, then from this fallback).
+        if (adapterHandled) return;
+
+        std::string bossActorKey = eventData.value("bossActorKey", eventKey);
+        if (bossActorKey.empty()) return;
+
+        for (int cat : { ACTORCAT_BOSS, ACTORCAT_ENEMY }) {
+            Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+            while (actor != nullptr) {
+                if (GetActorKey(actor, gPlayState->sceneNum) == bossActorKey) {
+                    if (actor->update != nullptr) {
+                        Actor_Kill(actor);
+                    }
+                    return;
+                }
+                actor = actor->next;
+            }
+        }
+
+    } else if (eventType == "BOSS_SUBACTOR_KILL") {
+        std::string targetActorKey = eventData.value("targetActorKey", std::string(""));
+        if (targetActorKey.empty()) return;
+
+        for (int cat = 0; cat < ACTORCAT_MAX; ++cat) {
+            Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+            while (actor != nullptr) {
+                if (GetActorKey(actor, gPlayState->sceneNum) == targetActorKey) {
+                    if (actor->update != nullptr) {
+                        Actor_Kill(actor);
+                    }
+                    return;
+                }
+                actor = actor->next;
+            }
+        }
+
+    } else if (eventType == "BOSS_STAGE_ENTER" ||
+               eventType == "BOSS_WEAKPOINT_HIT" ||
+               eventType == "BOSS_WEAKPOINT_DESTROY" ||
+               eventType == "BOSS_SUBACTOR_SPAWN" ||
+               eventType == "BOSS_INVULN_SET") {
+        // Infrastructure-only phase: state is already cached above in
+        // bossSnapshotStateByKey. Concrete boss adapters are added incrementally.
+        return;
+
+    } else if (eventType == "BOSS_CUTSCENE_GATE") {
+        // Generic gate for boss intros/intermissions. If skipIntro is true,
+        // late joiners and in-room clients can immediately leave the cutscene.
+        const bool skipIntro = eventData.value("skipIntro", false);
+        if (skipIntro && gPlayState->csCtx.state != CS_STATE_IDLE) {
+            func_8006450C(gPlayState, &gPlayState->csCtx);
+        }
+        return;
 
     } else {
         // Unknown or future event type — warn but don't crash.

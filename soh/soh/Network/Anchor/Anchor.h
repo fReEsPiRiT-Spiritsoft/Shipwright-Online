@@ -187,6 +187,19 @@ class Anchor : public Network {
     // boulder so the local OnActorSpawn hook does not echo it back.
     bool isSpawningRemoteBoulder = false;
 
+    // Boulder sync timing: localFrame = masterFrame + masterFrameToLocalOffset.
+    // Set from ROOM_SNAPSHOT when entering a room, then used to align incoming
+    // BOULDER_SPAWN triggerFrame values to local frame time.
+    bool hasMasterFrameSync = false;
+    int32_t masterFrameToLocalOffset = 0;
+
+    // Incoming BOULDER_SPAWN packets that should be applied on a future local frame.
+    std::vector<nlohmann::json> pendingBoulderSpawns;
+
+    // Duplicate/replay protection per actorKey. Stores the most recent accepted
+    // triggerFrame for this scene. Cleared on scene init.
+    std::unordered_map<std::string, uint32_t> lastBoulderTriggerFrameByKey;
+
     // ── Host-Election ────────────────────────────────────────────────────────
     // When the current room owner disconnects, all clients independently elect
     // the online peer with the lowest measured ping (ties broken by lowest
@@ -245,6 +258,14 @@ class Anchor : public Network {
     // Applied events are tracked per scene; the set is cleared on every scene change
     // (OnSceneInit) so events fire fresh when the same room is re-entered.
     std::unordered_set<std::string> processedRoomEvents;
+
+    // BossSync infrastructure (Phase 1):
+    // - dedupe/ordering per boss event stream via monotonically increasing seq
+    // - lightweight room-local boss snapshot cache for late joiners
+    // Key format for both maps:
+    //   roomBossKey = "{sceneNum}_{roomNum}_{bossActorKey}"
+    std::unordered_map<std::string, uint32_t> lastBossEventSeqByKey;
+    std::unordered_map<std::string, nlohmann::json> bossSnapshotStateByKey;
 
     // Proximity threshold: ~100 world units ≈ 1 OoT meter.
     static constexpr float    PHYSICAL_EXCHANGE_DIST_SQ = 100.0f * 100.0f;
@@ -306,6 +327,8 @@ class Anchor : public Network {
     void HandlePacket_EnemyPositionUpdate(nlohmann::json payload);
     void HandlePacket_BoulderSpawn(nlohmann::json payload);
     void HandlePacket_RoomKillSync(nlohmann::json payload);
+    void QueueOrApplyBoulderSpawn(nlohmann::json payload, bool allowDelay);
+    void ProcessPendingBoulderSpawns();
     void HandlePacket_PlayerAttackActor(nlohmann::json payload);
     void HandlePacket_ConsumeAdultTradeItem(nlohmann::json payload);
     void HandlePacket_DamagePlayer(nlohmann::json payload);

@@ -7,6 +7,7 @@
 #include "soh/Notification/Notification.h"
 #include "soh/frame_interpolation.h"
 #include "soh/OTRGlobals.h"
+#include "soh/Network/Anchor/BossSync/BossSyncDispatch.h"
 
 extern "C" {
 #include "variables.h"
@@ -138,7 +139,10 @@ void Anchor::RegisterHooks() {
         SendPacket_PlayerUpdate();
     });
 
-    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() { ProcessIncomingPacketQueue(); });
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        ProcessIncomingPacketQueue();
+        ProcessPendingBoulderSpawns();
+    });
 
     // Periodic PING broadcast for RTT measurement and host-election grace-period timer.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
@@ -709,9 +713,15 @@ void Anchor::RegisterHooks() {
         savedEnemyDrawFuncs.clear();
         trackedBgActors.clear();
         bgActorKeyframeTarget.clear();
+        pendingBoulderSpawns.clear();
+        lastBoulderTriggerFrameByKey.clear();
+        hasMasterFrameSync = false;
+        masterFrameToLocalOffset = 0;
         // Phase 6a: processed room events are scene-scoped — clear on every scene change
         // so the same event can fire fresh when the room is re-entered.
         processedRoomEvents.clear();
+        lastBossEventSeqByKey.clear();
+        bossSnapshotStateByKey.clear();
         recentCollectibleSpawns.clear();
         // Enemies respawn on every room entry, so per-scene kill lists are stale
         // after a scene transition.  Clear to avoid phantom kills on next visit.
@@ -727,16 +737,49 @@ void Anchor::RegisterHooks() {
         lastPvpAttackerClientId = 0;
     });
 
+    // RoomMaster: maintain a baseline boss-state cache every frame so
+    // late-join snapshots always contain at least one boss entry when a
+    // boss fight is currently active.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (!roomState.syncEnemies) return;
+        if (!IsRoomMaster()) return;
+
+        const s16 sceneNum = gPlayState->sceneNum;
+        const s8 curRoom = (s8)gPlayState->roomCtx.curRoom.num;
+        const std::string roomPrefix = BuildRoomKey(sceneNum, curRoom) + "_";
+
+        Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_BOSS].head;
+        while (actor != nullptr) {
+            if (actor->update != nullptr && (actor->room == curRoom || actor->room == -1)) {
+                const std::string bossActorKey = GetActorKey(actor, sceneNum);
+                const std::string roomBossKey = roomPrefix + bossActorKey;
+
+                nlohmann::json& state = bossSnapshotStateByKey[roomBossKey];
+                state["bossActorKey"] = bossActorKey;
+                state["bossActorId"] = (int)actor->id;
+                state["sceneNum"] = sceneNum;
+                state["roomNum"] = curRoom;
+                state["lastEventType"] = state.value("lastEventType", std::string("BOSS_STAGE_ENTER"));
+                state["lastSeq"] = state.value("lastSeq", (uint32_t)gPlayState->state.frames);
+                state["masterFrame"] = (uint32_t)gPlayState->state.frames;
+                state["lateJoinCanSkipIntro"] = true;
+                state["hp"] = (int)actor->colChkInfo.health;
+            }
+            actor = actor->next;
+        }
+    });
+
     // Non-authority: intercept damage BEFORE the actor processes it.
-    // When enemy sync is ON and the enemy is within syncRadius: forward damage to
-    // the authority so it can apply the canonical hit.  Outside syncRadius or when
-    // sync is OFF: let damage apply locally (client controls that enemy).
+    // When enemy sync is ON: ALWAYS forward damage to the authority regardless
+    // of syncRadius — syncRadius only gates position-broadcast throttling, NOT
+    // damage authority.  Applying damage locally for out-of-radius enemies would
+    // silently diverge HP between clients whenever both can reach the same enemy.
     COND_HOOK(OnBeforeActorUpdate, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || IsEnemyAuthority()) return;
         if (!roomState.syncEnemies) return; // sync off → vanilla behaviour
 
-        // Avoid dropping client hits when owner room-state is briefly stale.
-        // If we currently know no valid owner, keep vanilla local behavior.
+        // Avoid dropping client hits when the owner is briefly unreachable.
         bool ownerReachable = false;
         for (auto& [id, client] : clients) {
             if (id != roomState.ownerClientId) continue;
@@ -746,27 +789,22 @@ void Anchor::RegisterHooks() {
         if (!ownerReachable) return;
 
         Actor* actor = (Actor*)actorRef;
-        // Bosses are excluded: their state machines are too tightly coupled
-        // (multi-part kill conditions, special hit flags) for simple damage
-        // forwarding.  Boss hits apply locally; HP is driven downward-only by
-        // the authority's broadcast (see OnActorUpdate HP override below).
-        if (actor->category != ACTORCAT_ENEMY) return;
+        if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
         if (actor->colChkInfo.damage == 0) return; // no hit this frame
 
-        // Only intercept if the enemy is within the sync radius.
-        if (roomState.syncRadius > 0 && gPlayState) {
-            Player* localLink = GET_PLAYER(gPlayState);
-            f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
-            if (Math3D_Vec3fDistSq(&actor->world.pos, &localLink->actor.world.pos) > rSq) {
-                return; // outside radius: apply damage locally
-            }
-        }
-
+        // For bosses: forward the hit but keep local damage so the boss's own
+        // hit-response logic (stagger, invuln window, multi-part transitions)
+        // still plays correctly.  The authority will override HP via a
+        // BOSS_WEAKPOINT_HIT event which corrects any local drift.
+        // For regular enemies: zero local damage — HP is fully authority-driven.
+        const bool isBoss = (actor->category == ACTORCAT_BOSS);
         u8 damage = actor->colChkInfo.damage;
-        actor->colChkInfo.damage = 0; // Prevent local HP reduction and death state
+        if (!isBoss) {
+            actor->colChkInfo.damage = 0; // Prevent local HP reduction on enemies
+        }
         std::string actorKey = GetActorKey(actor, gPlayState->sceneNum);
-        SPDLOG_INFO("[Anchor:EnemySync] CLIENT: Hit intercepted | actorKey={} | damage={} | pos=({:.1f},{:.1f},{:.1f}) | health={}", 
-                    actorKey, (int)damage, actor->world.pos.x, actor->world.pos.y, actor->world.pos.z, (int)actor->colChkInfo.health);
+        SPDLOG_INFO("[Anchor:EnemySync] CLIENT: Hit intercepted | actorKey={} | damage={} | boss={} | health={}", 
+                    actorKey, (int)damage, isBoss, (int)actor->colChkInfo.health);
         SendPacket_PlayerAttackActor(actor, damage);
         Actor_SetColorFilter(actor, 0x4000, 0xFF, 0, 8);
     });
@@ -929,6 +967,30 @@ void Anchor::RegisterHooks() {
         }
     }));
 
+    // RoomMaster: capture boss stage/weakpoint transitions via adapter layer
+    // and publish canonical BOSS_* events over the room event channel.
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (!roomState.syncEnemies) return;
+        if (!IsRoomMaster()) return;
+
+        Actor* actor = static_cast<Actor*>(actorRef);
+        const bool isBossActor = actor->category == ACTORCAT_BOSS;
+        const bool isSupportedMiniBoss =
+            (actor->id == ACTOR_EN_BIGOKUTA && gPlayState->sceneNum == SCENE_JABU_JABU);
+        if (!isBossActor && !isSupportedMiniBoss) return;
+        if (actor->room != -1 && actor->room != gPlayState->roomCtx.curRoom.num) return;
+
+        nlohmann::json event = AnchorBossSync::CaptureBossTransition(gPlayState, actor);
+        if (!event.is_object() || event.empty()) return;
+
+        const std::string eventType = event.value("eventType", std::string(""));
+        if (eventType.empty()) return;
+
+        const std::string eventKey = event.value("eventKey", GetActorKey(actor, gPlayState->sceneNum));
+        SendPacket_RoomEvent(eventType, eventKey, event, false);
+    });
+
     // Non-authority: freeze enemy AI when the authority is in the same scene+room.
     // Non-authority: keep tracking remote HP overrides so we don't echo them back.
     COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
@@ -943,11 +1005,18 @@ void Anchor::RegisterHooks() {
 
         // Clear a confirmed remote override so it doesn't linger.
         auto remoteIt = pendingRemoteHealthOverride.find(key);
-        if (remoteIt != pendingRemoteHealthOverride.end() && remoteIt->second == currentHealth) {
-            pendingRemoteHealthOverride.erase(remoteIt);
+        if (remoteIt != pendingRemoteHealthOverride.end()) {
+            // HP enforcement: if a remote override is pending (authority sent us a
+            // lower HP), clamp local HP to that value.  This prevents non-authority
+            // enemies from regenerating HP between network packets.
+            if (currentHealth > remoteIt->second) {
+                actor->colChkInfo.health = remoteIt->second;
+            } else if (currentHealth == remoteIt->second) {
+                pendingRemoteHealthOverride.erase(remoteIt);
+            }
         }
 
-        trackedNonAuthEnemyHealth[key] = currentHealth;
+        trackedNonAuthEnemyHealth[key] = actor->colChkInfo.health;
     });
 
     // Authority: broadcast enemy deaths so all clients can kill their local copy.
@@ -964,17 +1033,19 @@ void Anchor::RegisterHooks() {
     // relay a spawn event so peers can spawn the same obstacle deterministically.
     COND_ID_HOOK(OnActorSpawn, ACTOR_EN_BW, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !roomState.syncEnemies || !gPlayState) return;
+        if (!IsRoomMaster()) return;
         if (isSpawningRemoteBoulder) return;
         Actor* actor = (Actor*)actorRef;
-        if (actor->room != gPlayState->roomCtx.curRoom.num) return;
+        if (actor->room != -1 && actor->room != gPlayState->roomCtx.curRoom.num) return;
         SendPacket_BoulderSpawn(actor);
     });
 
     COND_ID_HOOK(OnActorSpawn, ACTOR_EN_GOROIWA, isConnected, [&](void* actorRef) {
         if (!IsSaveLoaded() || !roomState.syncEnemies || !gPlayState) return;
+        if (!IsRoomMaster()) return;
         if (isSpawningRemoteBoulder) return;
         Actor* actor = (Actor*)actorRef;
-        if (actor->room != gPlayState->roomCtx.curRoom.num) return;
+        if (actor->room != -1 && actor->room != gPlayState->roomCtx.curRoom.num) return;
         SendPacket_BoulderSpawn(actor);
     });
 
@@ -1358,6 +1429,16 @@ void Anchor::RegisterHooks() {
         for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
             while (actor != nullptr) {
+                // Epona (ACTOR_EN_HORSE) lives in ACTORCAT_BG but each client
+                // runs its own Epona independently — her position must NOT be
+                // broadcast as a BG keyframe, otherwise non-master clients have
+                // their local Epona dragged to the master's Epona position while
+                // the player is riding it (causing all three clone bugs: erratic
+                // controls, underground tilt, intermittent failure).
+                if (actor->id == ACTOR_EN_HORSE) {
+                    actor = actor->next;
+                    continue;
+                }
                 std::string key = GetActorKey(actor, gPlayState->sceneNum);
                 BgKeyframe& kf  = trackedBgActors[key];
 
@@ -1405,6 +1486,13 @@ void Anchor::RegisterHooks() {
         for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
             while (actor != nullptr) {
+                // Skip Epona: each client owns their own Epona instance.
+                // Blending her toward the master's position fights the local
+                // rider AI and causes the clone-Epona bugs.
+                if (actor->id == ACTOR_EN_HORSE) {
+                    actor = actor->next;
+                    continue;
+                }
                 std::string key = GetActorKey(actor, gPlayState->sceneNum);
                 auto it = bgActorKeyframeTarget.find(key);
                 if (it != bgActorKeyframeTarget.end()) {

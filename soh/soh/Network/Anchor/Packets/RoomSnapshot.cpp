@@ -1,4 +1,5 @@
 #include "soh/Network/Anchor/Anchor.h"
+#include "soh/Network/Anchor/BossSync/BossSyncDispatch.h"
 #include <nlohmann/json.hpp>
 #include <libultraship/libultraship.h>
 
@@ -6,6 +7,30 @@ extern "C" {
 #include "variables.h"
 #include "functions.h"
 extern PlayState* gPlayState;
+}
+
+namespace {
+bool IsRollingBoulderActor(s16 actorId) {
+    return actorId == ACTOR_EN_BW || actorId == ACTOR_EN_GOROIWA;
+}
+
+bool IsBossScene(s16 sceneNum) {
+    switch (sceneNum) {
+        case SCENE_DEKU_TREE_BOSS:
+        case SCENE_DODONGOS_CAVERN_BOSS:
+        case SCENE_JABU_JABU_BOSS:
+        case SCENE_FOREST_TEMPLE_BOSS:
+        case SCENE_FIRE_TEMPLE_BOSS:
+        case SCENE_WATER_TEMPLE_BOSS:
+        case SCENE_SPIRIT_TEMPLE_BOSS:
+        case SCENE_SHADOW_TEMPLE_BOSS:
+        case SCENE_GANONDORF_BOSS:
+        case SCENE_GANON_BOSS:
+            return true;
+        default:
+            return false;
+    }
+}
 }
 
 /**
@@ -81,6 +106,7 @@ void Anchor::SendPacket_RoomSnapshot(uint32_t targetClientId) {
     payload["type"]           = ROOM_SNAPSHOT;
     payload["roomKey"]        = GetCurrentRoomKey();
     payload["targetClientId"] = targetClientId;
+    payload["masterFrameNow"] = (uint32_t)gPlayState->state.frames;
     payload["enemies"]        = enemies;
 
     // ── BG actor snapshot ────────────────────────────────────────────────────
@@ -110,6 +136,78 @@ void Anchor::SendPacket_RoomSnapshot(uint32_t targetClientId) {
         }
     }
     payload["bgObjects"] = bgObjects;
+
+    // ── Rolling boulder snapshot ────────────────────────────────────────────
+    // One-shot room-enter alignment: include currently active rolling boulders
+    // so late joiners immediately see the same hazard positions as the master.
+    nlohmann::json boulders = nlohmann::json::array();
+    for (int cat : { ACTORCAT_PROP, ACTORCAT_ENEMY }) {
+        Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+        while (actor != nullptr) {
+            if ((actor->room == curRoom || actor->room == -1) && actor->update != nullptr &&
+                IsRollingBoulderActor(actor->id)) {
+                nlohmann::json b;
+                b["sceneNum"] = sceneNum;
+                b["roomNum"] = curRoom;
+                b["actorKey"] = GetActorKey(actor, sceneNum);
+                b["actorId"] = (int)actor->id;
+                b["params"] = (int)actor->params;
+                b["posX"] = actor->world.pos.x;
+                b["posY"] = actor->world.pos.y;
+                b["posZ"] = actor->world.pos.z;
+                b["rotX"] = (int)actor->world.rot.x;
+                b["rotY"] = (int)actor->world.rot.y;
+                b["rotZ"] = (int)actor->world.rot.z;
+                // Snapshot aligns to "now" on master timeline.
+                b["triggerFrame"] = (uint32_t)gPlayState->state.frames;
+                boulders.push_back(b);
+            }
+            actor = actor->next;
+        }
+    }
+    payload["boulders"] = boulders;
+
+    // ── Boss sync snapshot (Phase 1 infrastructure) ───────────────────────
+    // Cache contains last known room-local boss events/state by
+    // roomBossKey="{scene}_{room}_{bossActorKey}". Send only entries for the
+    // current room so a late joiner can continue from the same boss phase.
+    nlohmann::json bossStates = nlohmann::json::array();
+    const std::string roomPrefix = BuildRoomKey(sceneNum, curRoom) + "_";
+    std::unordered_set<std::string> seenBossKeys;
+    for (const auto& [roomBossKey, state] : bossSnapshotStateByKey) {
+        if (roomBossKey.rfind(roomPrefix, 0) == 0) {
+            nlohmann::json entry = state;
+            entry["roomBossKey"] = roomBossKey;
+            bossStates.push_back(entry);
+            seenBossKeys.insert(state.value("bossActorKey", std::string("")));
+        }
+    }
+
+    // Fallback: if an active boss is present but no explicit event cache exists
+    // yet, emit a baseline boss snapshot entry so late joiners still skip intro
+    // and enter combat immediately.
+    Actor* boss = gPlayState->actorCtx.actorLists[ACTORCAT_BOSS].head;
+    while (boss != nullptr) {
+        if (boss->update != nullptr && (boss->room == curRoom || boss->room == -1)) {
+            const std::string bossActorKey = GetActorKey(boss, sceneNum);
+            if (!bossActorKey.empty() && !seenBossKeys.count(bossActorKey)) {
+                nlohmann::json entry;
+                entry["roomBossKey"] = roomPrefix + bossActorKey;
+                entry["bossActorKey"] = bossActorKey;
+                entry["bossActorId"] = (int)boss->id;
+                entry["sceneNum"] = sceneNum;
+                entry["roomNum"] = curRoom;
+                entry["lastEventType"] = "BOSS_STAGE_ENTER";
+                entry["lastSeq"] = (uint32_t)gPlayState->state.frames;
+                entry["masterFrame"] = (uint32_t)gPlayState->state.frames;
+                entry["lateJoinCanSkipIntro"] = true;
+                entry["hp"] = (int)boss->colChkInfo.health;
+                bossStates.push_back(entry);
+            }
+        }
+        boss = boss->next;
+    }
+    payload["bossStates"] = bossStates;
 
     // ── Battle Royale match state snapshot ───────────────────────────────────
     // A late joiner must know the current BR state immediately.  We encode:
@@ -150,8 +248,8 @@ void Anchor::SendPacket_RoomSnapshot(uint32_t targetClientId) {
         payload["brMatchState"] = brState;
     }
 
-    SPDLOG_INFO("[Anchor] RoomSnapshot: sending {} enemy + {} BG state(s) to client {}",
-                enemies.size(), bgObjects.size(), targetClientId);
+    SPDLOG_INFO("[Anchor] RoomSnapshot: sending {} enemy + {} BG + {} boulder + {} boss state(s) to client {}",
+                enemies.size(), bgObjects.size(), boulders.size(), bossStates.size(), targetClientId);
     SendJsonToRemote(payload);
 }
 
@@ -167,6 +265,12 @@ void Anchor::HandlePacket_RoomSnapshot(nlohmann::json payload) {
     // If we already moved on to a different room, the snapshot is stale — drop it.
     const std::string roomKey = payload.value("roomKey", "");
     if (roomKey.empty() || roomKey != GetCurrentRoomKey()) return;
+
+    if (payload.contains("masterFrameNow")) {
+        uint32_t masterFrameNow = payload.value("masterFrameNow", (uint32_t)0);
+        masterFrameToLocalOffset = (int32_t)gPlayState->state.frames - (int32_t)masterFrameNow;
+        hasMasterFrameSync = true;
+    }
 
     if (!payload.contains("enemies")) return;
 
@@ -259,6 +363,59 @@ void Anchor::HandlePacket_RoomSnapshot(nlohmann::json payload) {
             target.pos.z = b.value("posZ", 0.0f);
             target.rotY  = (s16)b.value("rotY", 0);
             bgActorKeyframeTarget[key] = target;
+        }
+    }
+
+    if (payload.contains("boulders") && roomState.syncEnemies) {
+        const auto& boulderArray = payload["boulders"];
+        SPDLOG_INFO("[Anchor] RoomSnapshot: applying {} rolling boulder state(s)", boulderArray.size());
+        for (const auto& b : boulderArray) {
+            QueueOrApplyBoulderSpawn(b, true);
+        }
+    }
+
+    if (payload.contains("bossStates") && payload["bossStates"].is_array()) {
+        const auto& bossStateArray = payload["bossStates"];
+        SPDLOG_INFO("[Anchor] RoomSnapshot: applying {} boss state(s)", bossStateArray.size());
+        bool anyLateJoinSkip = false;
+        for (const auto& state : bossStateArray) {
+            if (!state.is_object()) continue;
+
+            std::string roomBossKey = state.value("roomBossKey", std::string(""));
+            std::string bossActorKey = state.value("bossActorKey", std::string(""));
+            if (roomBossKey.empty() && !bossActorKey.empty()) {
+                roomBossKey = GetCurrentRoomKey() + "_" + bossActorKey;
+            }
+            if (roomBossKey.empty()) continue;
+
+            bossSnapshotStateByKey[roomBossKey] = state;
+            uint32_t seq = state.value("lastSeq", (uint32_t)0);
+            if (seq != 0) {
+                uint32_t& lastSeq = lastBossEventSeqByKey[roomBossKey];
+                if (seq > lastSeq) {
+                    lastSeq = seq;
+                }
+            }
+
+            if (state.value("lateJoinCanSkipIntro", true)) {
+                anyLateJoinSkip = true;
+            }
+
+            // Apply snapshot HP to the live boss actor so the late-joiner sees
+            // the correct health immediately — not the freshly-spawned ROM default.
+            const s16 bossActorId = (s16)state.value("bossActorId", (int)-1);
+            const s16 stateSceneNum = (s16)state.value("sceneNum", (int)gPlayState->sceneNum);
+            if (bossActorId >= 0) {
+                AnchorBossSync::ApplyBossSnapshot(gPlayState, stateSceneNum, bossActorId, state);
+            }
+        }
+
+        // Late-joiner QoL: if a boss fight is already in progress, skip any
+        // currently running intro/intermission cutscene so the player can
+        // immediately participate in combat.
+        if (anyLateJoinSkip && IsBossScene(gPlayState->sceneNum) &&
+            gPlayState->csCtx.state != CS_STATE_IDLE) {
+            func_8006450C(gPlayState, &gPlayState->csCtx);
         }
     }
 
