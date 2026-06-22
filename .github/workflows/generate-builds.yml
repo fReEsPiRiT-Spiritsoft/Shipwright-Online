@@ -22,6 +22,48 @@ jobs:
           echo "Use IsPlaySessionActive(play) from BossSyncAdapter.h for apply-side lifecycle guards."
           exit 1
         fi
+    - name: Guardrail - updated Anchor systems invariants
+      run: |
+        set -euo pipefail
+
+        # Updated BossSync adapters must use the centralized apply-side session guard.
+        adapter_files=(
+          soh/soh/Network/Anchor/BossSync/BarinadeBossAdapter.cpp
+          soh/soh/Network/Anchor/BossSync/MorphaBossAdapter.cpp
+          soh/soh/Network/Anchor/BossSync/BongoBongoAdapter.cpp
+          soh/soh/Network/Anchor/BossSync/VolvagiaAdapter.cpp
+          soh/soh/Network/Anchor/BossSync/Ganon2Adapter.cpp
+          soh/soh/Network/Anchor/BossSync/BigOctoMinibossAdapter.cpp
+          soh/soh/Network/Anchor/BossSync/GenericBossHealthPhaseAdapter.cpp
+          soh/soh/Network/Anchor/BossSync/TwinrovaAdapter.cpp
+        )
+        for file in "${adapter_files[@]}"; do
+          if [ "$(rg -c 'IsPlaySessionActive\(play\)' "$file")" -lt 2 ]; then
+            echo "ERROR: Missing IsPlaySessionActive(play) guards in $file"
+            exit 1
+          fi
+        done
+
+        # RoomEvent must keep seq=0 hardening and adapter/fallback split.
+        rg -n 'effectiveSeq\s*=\s*\(seq\s*==\s*0\)\s*\?\s*1u\s*:\s*seq' soh/soh/Network/Anchor/Packets/RoomEvent.cpp >/dev/null
+        rg -n 'bool\s+adapterHandled\s*=\s*false' soh/soh/Network/Anchor/Packets/RoomEvent.cpp >/dev/null
+        rg -n 'if\s*\(adapterHandled\)\s*return;' soh/soh/Network/Anchor/Packets/RoomEvent.cpp >/dev/null
+
+        # RoomSnapshot must still apply boss snapshots and boulder replay pipeline.
+        rg -n 'AnchorBossSync::ApplyBossSnapshot\(' soh/soh/Network/Anchor/Packets/RoomSnapshot.cpp >/dev/null
+        rg -n 'QueueOrApplyBoulderSpawn\(' soh/soh/Network/Anchor/Packets/RoomSnapshot.cpp >/dev/null
+        rg -n 'masterFrameNow' soh/soh/Network/Anchor/Packets/RoomSnapshot.cpp >/dev/null
+
+        # Boulder processing pipeline and dedupe map must remain present.
+        rg -n 'ProcessPendingBoulderSpawns\(' soh/soh/Network/Anchor/Packets/BoulderSpawn.cpp >/dev/null
+        rg -n 'lastBoulderTriggerFrameByKey' soh/soh/Network/Anchor/Packets/BoulderSpawn.cpp >/dev/null
+
+        # Scene-init cleanup and per-frame pumping must stay wired.
+        rg -n 'ProcessPendingBoulderSpawns\(' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'hasMasterFrameSync\s*=\s*false' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'masterFrameToLocalOffset\s*=\s*0' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'lastBossEventSeqByKey\.clear\(\)' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'bossSnapshotStateByKey\.clear\(\)' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
 
   generate-soh-otr:
     runs-on: ubuntu-22.04

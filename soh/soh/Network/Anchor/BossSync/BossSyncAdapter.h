@@ -5,6 +5,8 @@
 
 extern "C" {
 #include "z64.h"
+
+extern SaveContext gSaveContext;
 }
 
 namespace AnchorBossSync {
@@ -14,7 +16,7 @@ inline bool IsPlaySessionActive(PlayState* play) {
     return false;
   }
 
-  if (GET_PLAYER(play) == nullptr) {
+  if (((Player*)play->actorCtx.actorLists[ACTORCAT_PLAYER].head) == nullptr) {
     return false;
   }
 
