@@ -7,6 +7,22 @@ concurrency:
   cancel-in-progress: true
 jobs:
 
+  bosssync-guardrails:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Git Checkout
+      uses: actions/checkout@v6
+      with:
+        submodules: true
+    - name: Guardrail - forbid unqualified IsSaveLoaded in BossSync
+      run: |
+        set -euo pipefail
+        if rg -n -P '(?<![:[:alnum:]_])IsSaveLoaded\s*\(' soh/soh/Network/Anchor/BossSync/*.cpp; then
+          echo "ERROR: Found unqualified IsSaveLoaded() in BossSync adapters."
+          echo "Use IsPlaySessionActive(play) from BossSyncAdapter.h for apply-side lifecycle guards."
+          exit 1
+        fi
+
   generate-soh-otr:
     runs-on: ubuntu-22.04
     steps:
@@ -75,7 +91,7 @@ jobs:
         retention-days: 3
 
   build-macos:
-    needs: generate-soh-otr
+    needs: [generate-soh-otr, bosssync-guardrails]
     runs-on: macos-14
     steps:
     - name: Git Checkout
@@ -151,7 +167,7 @@ jobs:
         path: /opt/local/
 
   build-linux:
-    needs: generate-soh-otr
+    needs: [generate-soh-otr, bosssync-guardrails]
     runs-on: ubuntu-22.04
     steps:
     - name: Git Checkout
@@ -265,7 +281,7 @@ jobs:
         path: deps
 
   build-windows:
-    needs: generate-soh-otr
+    needs: [generate-soh-otr, bosssync-guardrails]
     runs-on: windows-latest
     steps:
     - name: Install dependencies

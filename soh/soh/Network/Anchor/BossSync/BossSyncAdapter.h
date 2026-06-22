@@ -9,6 +9,26 @@ extern "C" {
 
 namespace AnchorBossSync {
 
+inline bool IsPlaySessionActive(PlayState* play) {
+  if (play == nullptr) {
+    return false;
+  }
+
+  if (GET_PLAYER(play) == nullptr) {
+    return false;
+  }
+
+  if (gSaveContext.fileNum < 0 || gSaveContext.fileNum > 2) {
+    return false;
+  }
+
+  if (gSaveContext.gameMode != GAMEMODE_NORMAL) {
+    return false;
+  }
+
+  return true;
+}
+
 // Adapter interface for a single boss/miniboss state machine.
 // Implementations convert local actor transitions to canonical BOSS_* events
 // and apply remote events/snapshots back into local actor state.

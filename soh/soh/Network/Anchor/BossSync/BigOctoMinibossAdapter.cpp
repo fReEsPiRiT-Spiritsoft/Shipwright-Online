@@ -154,7 +154,7 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
     }
 
     void ApplyEvent(PlayState* play, const nlohmann::json& payload) override {
-        if (!play || !IsSaveLoaded()) return;
+        if (!IsPlaySessionActive(play)) return;
 
         const std::string eventType = payload.value("eventType", std::string(""));
         const std::string bossActorKey = payload.value("bossActorKey", std::string(""));
@@ -212,7 +212,7 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
     }
 
     void ApplySnapshot(PlayState* play, const nlohmann::json& snapshot) override {
-        if (!play || !IsSaveLoaded()) return;
+        if (!IsPlaySessionActive(play)) return;
 
         const std::string bossActorKey = snapshot.value("bossActorKey", std::string(""));
         const uint8_t hp = (uint8_t)snapshot.value("hp", 1);
