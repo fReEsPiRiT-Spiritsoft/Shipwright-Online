@@ -160,6 +160,8 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
                     eventType, eventKey, (int)packetScene, packetRoom);
     }
 
+    bool adapterHandled = false;
+
     if (isBossEvent) {
         std::string bossActorKey = eventData.value("bossActorKey", std::string(""));
         if (bossActorKey.empty()) {
@@ -195,7 +197,6 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         state["lateJoinCanSkipIntro"] = eventData.value("lateJoinCanSkipIntro", true);
 
         const s16 bossActorId = (s16)eventData.value("bossActorId", (int)-1);
-        bool adapterHandled = false;
         if (bossActorId >= 0) {
             adapterHandled = AnchorBossSync::ApplyBossEvent(gPlayState, packetScene, bossActorId, payload);
         }
