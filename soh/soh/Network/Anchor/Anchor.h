@@ -259,6 +259,14 @@ class Anchor : public Network {
     // (OnSceneInit) so events fire fresh when the same room is re-entered.
     std::unordered_set<std::string> processedRoomEvents;
 
+    // Link-movable puzzle switch sync:
+    // Tracks local per-room switch state transitions for push-block style
+    // puzzles and ensures we only broadcast a solve event once per room+switch.
+    // Key format:
+    //   "{sceneNum}_{roomNum}_{switchFlag}"
+    std::unordered_map<std::string, bool> puzzleSwitchStateByKey;
+    std::unordered_set<std::string> announcedPuzzleSwitchSolveByKey;
+
     // BossSync infrastructure (Phase 1):
     // - dedupe/ordering per boss event stream via monotonically increasing seq
     // - lightweight room-local boss snapshot cache for late joiners

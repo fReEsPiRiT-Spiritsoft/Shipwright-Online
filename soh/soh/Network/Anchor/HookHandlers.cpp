@@ -42,6 +42,136 @@ extern "C" {
 extern PlayState* gPlayState;
 extern MapData* gMapData;
 
+bool ShouldKeepDungeonBgActorUpdating(const Actor* actor) {
+    if (actor == nullptr) {
+        return false;
+    }
+
+    switch (actor->id) {
+        case ACTOR_BG_BDAN_OBJECTS:
+        case ACTOR_BG_BDAN_SWITCH:
+        case ACTOR_BG_BOMBWALL:
+        case ACTOR_BG_HIDAN_FIREWALL:
+        case ACTOR_BG_HIDAN_DALM:
+        case ACTOR_BG_HIDAN_HROCK:
+        case ACTOR_BG_HIDAN_ROCK:
+        case ACTOR_BG_HIDAN_RSEKIZOU:
+        case ACTOR_BG_HIDAN_SEKIZOU:
+        case ACTOR_BG_HIDAN_SIMA:
+        case ACTOR_BG_HIDAN_SYOKU:
+        case ACTOR_BG_HIDAN_KOUSI:
+        case ACTOR_BG_HIDAN_HAMSTEP:
+        case ACTOR_BG_HIDAN_FWBIG:
+        case ACTOR_BG_HIDAN_KOWARERUKABE:
+        case ACTOR_BG_MORI_ELEVATOR:
+        case ACTOR_BG_MORI_BIGST:
+        case ACTOR_BG_MORI_HINERI:
+        case ACTOR_BG_MORI_KAITENKABE:
+        case ACTOR_BG_MORI_RAKKATENJO:
+        case ACTOR_BG_MORI_HASHIGO:
+        case ACTOR_BG_MORI_HASHIRA4:
+        case ACTOR_BG_MORI_IDOMIZU:
+        case ACTOR_BG_HIDAN_FSLIFT:
+        case ACTOR_BG_MIZU_MOVEBG:
+        case ACTOR_BG_MIZU_BWALL:
+        case ACTOR_BG_MIZU_WATER:
+        case ACTOR_BG_MIZU_UZU:
+        case ACTOR_BG_MIZU_SHUTTER:
+        case ACTOR_BG_HAKA_WATER:
+        case ACTOR_BG_HAKA_GATE:
+        case ACTOR_BG_HAKA_MEGANE:
+        case ACTOR_BG_HAKA_MEGANEBG:
+        case ACTOR_BG_HAKA_SHIP:
+        case ACTOR_BG_HAKA_SGAMI:
+        case ACTOR_BG_HAKA_TUBO:
+        case ACTOR_BG_HAKA_TRAP:
+        case ACTOR_BG_HAKA_HUTA:
+        case ACTOR_BG_HAKA_ZOU:
+        case ACTOR_BG_GJYO_BRIDGE:
+        case ACTOR_BG_GATE_SHUTTER:
+        case ACTOR_BG_SPOT01_FUSYA:
+        case ACTOR_BG_SPOT01_IDOHASHIRA:
+        case ACTOR_BG_SPOT01_IDOMIZU:
+        case ACTOR_BG_SPOT01_IDOSOKO:
+        case ACTOR_BG_SPOT01_OBJECTS2:
+        case ACTOR_BG_SPOT08_BAKUDANKABE:
+        case ACTOR_BG_SPOT11_BAKUDANKABE:
+        case ACTOR_BG_SPOT15_SAKU:
+        case ACTOR_BG_SPOT15_RRBOX:
+        case ACTOR_BG_SPOT16_DOUGHNUT:
+        case ACTOR_BG_SPOT16_BOMBSTONE:
+        case ACTOR_BG_SPOT17_BAKUDANKABE:
+        case ACTOR_BG_SPOT18_FUTA:
+        case ACTOR_BG_SPOT18_SHUTTER:
+        case ACTOR_BG_ICE_OBJECTS:
+        case ACTOR_BG_ICE_SHUTTER:
+        case ACTOR_BG_GND_NISEKABE:
+        case ACTOR_BG_GND_ICEBLOCK:
+        case ACTOR_BG_BOM_GUARD:
+        case ACTOR_BG_JYA_LIFT:
+        case ACTOR_BG_JYA_1FLIFT:
+        case ACTOR_BG_JYA_GOROIWA:
+        case ACTOR_BG_JYA_ZURERUKABE:
+        case ACTOR_BG_JYA_COBRA:
+        case ACTOR_BG_JYA_KANAAMI:
+        case ACTOR_BG_JYA_MEGAMI:
+        case ACTOR_BG_JYA_BOMBCHUIWA:
+        case ACTOR_BG_JYA_AMISHUTTER:
+        case ACTOR_BG_JYA_BOMBIWA:
+        case ACTOR_BG_JYA_IRONOBJ:
+        case ACTOR_BG_JYA_BLOCK:
+        case ACTOR_BG_JYA_HAHENIRON:
+        case ACTOR_BG_BOWL_WALL:
+        case ACTOR_BG_SST_FLOOR:
+        case ACTOR_OBJ_ELEVATOR:
+        case ACTOR_OBJ_LIFT:
+        case ACTOR_OBJ_OSHIHIKI:
+        case ACTOR_OBJ_MAKEOSHIHIKI:
+        case ACTOR_OBJ_WARP2BLOCK:
+        case ACTOR_OBJ_HSBLOCK:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsLinkMovablePuzzleActor(const Actor* actor) {
+    if (actor == nullptr) {
+        return false;
+    }
+
+    switch (actor->id) {
+        case ACTOR_OBJ_OSHIHIKI:
+        case ACTOR_OBJ_MAKEOSHIHIKI:
+        case ACTOR_OBJ_WARP2BLOCK:
+        case ACTOR_OBJ_HSBLOCK:
+        case ACTOR_BG_PUSHBOX:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool TryGetLinkPuzzleSwitchFlag(const Actor* actor, s16* outSwitchFlag) {
+    if (actor == nullptr || outSwitchFlag == nullptr) {
+        return false;
+    }
+
+    // Obj_Oshihiki encodes the puzzle switch in bits 8..13 (0..63).
+    // Reuse the same decoding for makeoshihiki-driven puzzle setups.
+    if (actor->id != ACTOR_OBJ_OSHIHIKI && actor->id != ACTOR_OBJ_MAKEOSHIHIKI) {
+        return false;
+    }
+
+    const s16 switchFlag = (actor->params >> 8) & 0x3F;
+    if (switchFlag < 0 || switchFlag > 0x3F) {
+        return false;
+    }
+
+    *outSwitchFlag = switchFlag;
+    return true;
+}
+
 void func_8086ED70(BgBombwall* bgBombwall, PlayState* play);
 void BgBreakwall_Wait(BgBreakwall* bgBreakwall, PlayState* play);
 void BgHakaZou_WaitForHit(BgHakaZou* bgHakaZou, PlayState* play);
@@ -173,7 +303,8 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnFlagSet, isConnected,
               [&](s16 flagType, s16 flag) { SendPacket_SetFlag(SCENE_ID_MAX, flagType, flag); });
 
-    COND_HOOK(OnFlagUnset, isConnected,
+            case ACTOR_BG_MORI_BIGST:
+            case ACTOR_BG_MORI_HINERI:
               [&](s16 flagType, s16 flag) { SendPacket_UnsetFlag(SCENE_ID_MAX, flagType, flag); });
 
     COND_HOOK(OnSceneFlagSet, isConnected,
@@ -191,6 +322,7 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnRandoSetIsSkipped, isConnected, [&](RandomizerCheck rc, bool isSkipped) {
         if (!isHandlingUpdateTeamState) {
             SendPacket_SetCheckStatus(rc);
+            case ACTOR_BG_JYA_MEGAMI:
         }
     });
 
@@ -199,6 +331,8 @@ void Anchor::RegisterHooks() {
 
     COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON2, isConnected, [&](void* refActor) {
         SendPacket_GameComplete();
+            case ACTOR_BG_BOWL_WALL:
+            case ACTOR_BG_JYA_BIGMIRROR:
         // Battle Royale: erster Ganondorf-Sieg = Match-Sieg.
         // Der lokale Spieler sendet MATCH_END mit sich selbst als Sieger.
         if (roomState.battleRoyaleMode && brMatchActive) {
@@ -524,10 +658,10 @@ void Anchor::RegisterHooks() {
         Actor* actor = static_cast<Actor*>(refActor);
         // Only freeze true moving-platform BG actors.
         if (actor->category != ACTORCAT_BG) return;
-        // Jabu-Jabu platform logic (Big Octo platform / wobble objects) must run
-        // locally on every client. Freezing this actor suppresses intermediate
-        // boss setup and causes desynced wobble platform states.
-        if (actor->id == ACTOR_BG_BDAN_OBJECTS) return;
+        // Some dungeon movers rely on their native Update() for local contact,
+        // collision, or state progression. Freezing them breaks platform motion
+        // on non-master clients, so keep those actors live.
+        if (ShouldKeepDungeonBgActorUpdating(actor)) return;
         // Epona must never be frozen — mounting/dismounting must work on all clients.
         if (actor->id == ACTOR_EN_HORSE) return;
         if (!roomState.syncBGObjects || IsEnemyAuthority() || !gPlayState) return;
@@ -720,6 +854,8 @@ void Anchor::RegisterHooks() {
         // Phase 6a: processed room events are scene-scoped — clear on every scene change
         // so the same event can fire fresh when the room is re-entered.
         processedRoomEvents.clear();
+        puzzleSwitchStateByKey.clear();
+        announcedPuzzleSwitchSolveByKey.clear();
         lastBossEventSeqByKey.clear();
         bossSnapshotStateByKey.clear();
         recentCollectibleSpawns.clear();
@@ -791,6 +927,9 @@ void Anchor::RegisterHooks() {
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
         if (actor->colChkInfo.damage == 0) return; // no hit this frame
+        // Rolling boulders are scripted hazards with fixed routes — they run
+        // entirely locally after spawn and must not be damage-intercepted.
+        if (IsRollingBoulderActor(actor->id)) return;
 
         // For bosses: forward the hit but keep local damage so the boss's own
         // hit-response logic (stagger, invuln window, multi-part transitions)
@@ -820,6 +959,8 @@ void Anchor::RegisterHooks() {
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
         if (!gPlayState) return;
+        // Rolling boulders have fixed scripted routes — no aggro target needed.
+        if (IsRollingBoulderActor(actor->id)) return;
 
         // Skip aggro-fake for enemies outside the sync radius of all clients.
         if (roomState.syncRadius > 0) {
@@ -883,6 +1024,9 @@ void Anchor::RegisterHooks() {
 
         Actor* actor = (Actor*)actorRef;
         if (actor->category != ACTORCAT_ENEMY && actor->category != ACTORCAT_BOSS) return;
+        // Rolling boulders run locally on every client after spawn-sync — do not
+        // broadcast their HP or position, which would fight local physics.
+        if (IsRollingBoulderActor(actor->id)) return;
         // NOTE: Do NOT skip health==0 actors here. When a lethal hit sets health to 0,
         // the enemy runs its native death animation for several frames before Actor_Kill
         // is called. We must continue broadcasting position during that time so the
@@ -1002,6 +1146,11 @@ void Anchor::RegisterHooks() {
 
         std::string key = GetActorKey(actor, gPlayState->sceneNum);
         u8 currentHealth = actor->colChkInfo.health;
+
+        // Rolling boulders run entirely locally on non-master clients after spawn.
+        // Do not pin their position (EN_BW) or enforce HP — this would fight the
+        // local scripted physics and cause the glitch/spin-in-place behaviour.
+        if (IsRollingBoulderActor(actor->id)) return;
 
         // Clear a confirmed remote override so it doesn't linger.
         auto remoteIt = pendingRemoteHealthOverride.find(key);
@@ -1414,6 +1563,68 @@ void Anchor::RegisterHooks() {
     // #endregion
 
     // #region BG Actor Keyframe Sync
+    // Link-movable puzzle solve guard:
+    // Detect local switch transitions caused by push-block puzzles and
+    // broadcast a one-shot room event so every client in the same room can
+    // apply the solved switch state.
+    COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        if (!roomState.syncBGObjects) return;
+
+        const s16 sceneNum = gPlayState->sceneNum;
+        const s8 roomNum = gPlayState->roomCtx.curRoom.num;
+
+        for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
+            Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+            while (actor != nullptr) {
+                if (actor->room != -1 && actor->room != roomNum) {
+                    actor = actor->next;
+                    continue;
+                }
+
+                s16 switchFlag = -1;
+                if (!TryGetLinkPuzzleSwitchFlag(actor, &switchFlag)) {
+                    actor = actor->next;
+                    continue;
+                }
+
+                const std::string stateKey = BuildRoomKey(sceneNum, roomNum) + "_" + std::to_string((int)switchFlag);
+                const bool isSolved = Flags_GetSwitch(gPlayState, switchFlag);
+
+                auto stateIt = puzzleSwitchStateByKey.find(stateKey);
+                if (stateIt == puzzleSwitchStateByKey.end()) {
+                    puzzleSwitchStateByKey[stateKey] = isSolved;
+                    if (isSolved) {
+                        announcedPuzzleSwitchSolveByKey.insert(stateKey);
+                    }
+                    actor = actor->next;
+                    continue;
+                }
+
+                const bool wasSolved = stateIt->second;
+                stateIt->second = isSolved;
+                if (wasSolved || !isSolved) {
+                    actor = actor->next;
+                    continue;
+                }
+
+                if (!announcedPuzzleSwitchSolveByKey.count(stateKey)) {
+                    nlohmann::json data;
+                    data["switchFlag"] = switchFlag;
+                    data["actorId"] = actor->id;
+                    data["actorKey"] = GetActorKey(actor, sceneNum);
+                    data["solverClientId"] = ownClientId;
+
+                    SendPacket_RoomEvent("PUZZLE_SWITCH_SOLVED", std::string("puzzle_sw_") + std::to_string((int)switchFlag),
+                                         data, /*streaming=*/false);
+                    announcedPuzzleSwitchSolveByKey.insert(stateKey);
+                }
+
+                actor = actor->next;
+            }
+        }
+    });
+
     // Authority: scan all ACTORCAT_BG and ACTORCAT_PROP actors every frame.
     // Send a keyframe packet when:
     //   a) The actor has moved and the heartbeat interval has elapsed, OR
@@ -1439,6 +1650,13 @@ void Anchor::RegisterHooks() {
                     actor = actor->next;
                     continue;
                 }
+                // EN_GOROIWA (rolling stone, ACTORCAT_PROP) has fixed scripted
+                // routes and runs locally on each client after spawn-sync.
+                // Broadcasting its position would fight local physics (spin/glitch).
+                if (actor->id == ACTOR_EN_GOROIWA) {
+                    actor = actor->next;
+                    continue;
+                }
                 std::string key = GetActorKey(actor, gPlayState->sceneNum);
                 BgKeyframe& kf  = trackedBgActors[key];
 
@@ -1454,6 +1672,10 @@ void Anchor::RegisterHooks() {
                     auto  msSinceSent  = std::chrono::duration_cast<std::chrono::milliseconds>(
                                              now - kf.lastSentAt).count();
 
+                    // Link-verschiebbare Puzzleobjekte brauchen dichtere Keyframes,
+                    // damit Schieben/Ziehen fuer Clients direkt und stabil wirkt.
+                    const uint32_t heartbeatMs = IsLinkMovablePuzzleActor(actor) ? 120u : BG_KEYFRAME_INTERVAL_MS;
+
                     // Velocity direction reversal detection (dot product sign flip).
                     float dot = actor->velocity.x * kf.vel.x
                               + actor->velocity.y * kf.vel.y
@@ -1462,7 +1684,7 @@ void Anchor::RegisterHooks() {
                     float magLast = fabsf(kf.vel.x) + fabsf(kf.vel.y) + fabsf(kf.vel.z);
                     bool  velReversed = (magCur > 0.001f && magLast > 0.001f && dot < 0.0f);
 
-                    if (velReversed || static_cast<uint32_t>(msSinceSent) >= BG_KEYFRAME_INTERVAL_MS) {
+                    if (velReversed || static_cast<uint32_t>(msSinceSent) >= heartbeatMs) {
                         SendPacket_BgKeyframeSync(actor);
                         kf.lastSentAt = now;
                     }
@@ -1493,13 +1715,21 @@ void Anchor::RegisterHooks() {
                     actor = actor->next;
                     continue;
                 }
+                // EN_GOROIWA: spawn-only sync, runs locally after that.
+                if (actor->id == ACTOR_EN_GOROIWA) {
+                    actor = actor->next;
+                    continue;
+                }
                 std::string key = GetActorKey(actor, gPlayState->sceneNum);
                 auto it = bgActorKeyframeTarget.find(key);
                 if (it != bgActorKeyframeTarget.end()) {
                     const BgKeyframeTarget& target = it->second;
-                    Math_ApproachF(&actor->world.pos.x, target.pos.x, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
-                    Math_ApproachF(&actor->world.pos.y, target.pos.y, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
-                    Math_ApproachF(&actor->world.pos.z, target.pos.z, BG_LERP_FRACTION, BG_LERP_MAX_STEP);
+                    const bool responsivePuzzleLerp = IsLinkMovablePuzzleActor(actor);
+                    const f32 lerpFraction = responsivePuzzleLerp ? 0.30f : BG_LERP_FRACTION;
+                    const f32 lerpMaxStep = responsivePuzzleLerp ? 12.0f : BG_LERP_MAX_STEP;
+                    Math_ApproachF(&actor->world.pos.x, target.pos.x, lerpFraction, lerpMaxStep);
+                    Math_ApproachF(&actor->world.pos.y, target.pos.y, lerpFraction, lerpMaxStep);
+                    Math_ApproachF(&actor->world.pos.z, target.pos.z, lerpFraction, lerpMaxStep);
                     actor->world.rot.y = target.rotY; // snap — avoids lag on direction reversals
                 }
                 actor = actor->next;

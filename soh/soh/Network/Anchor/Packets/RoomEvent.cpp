@@ -299,6 +299,19 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
             ruto->drawConfig = 1;
         }
 
+    } else if (eventType == "PUZZLE_SWITCH_SOLVED") {
+        // One-shot room-local solve state for link-movable push-block puzzles.
+        // Only clients inside the same room apply the switch flag.
+        if (!roomState.syncBGObjects) return;
+        if ((s8)packetRoom != gPlayState->roomCtx.curRoom.num) return;
+
+        const s16 switchFlag = (s16)eventData.value("switchFlag", -1);
+        if (switchFlag < 0 || switchFlag > 0x3F) return;
+
+        if (!Flags_GetSwitch(gPlayState, switchFlag)) {
+            Flags_SetSwitch(gPlayState, switchFlag);
+        }
+
     } else if (eventType == "JABU_ACTOR_SPAWN") {
         // Room-master authoritative spawn relay for Jabu-specific scripted actors
         // that may not spawn reliably on non-masters due to local cutscene/script

@@ -69,6 +69,26 @@ jobs:
         rg -n 'lastBossEventSeqByKey\.clear\(\)' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
         rg -n 'bossSnapshotStateByKey\.clear\(\)' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
 
+        # Dungeon BG freeze exemption must keep the main moving-platform actors live.
+        rg -n 'ShouldKeepDungeonBgActorUpdating\(' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'ACTOR_BG_BDAN_OBJECTS|ACTOR_BG_HIDAN_FIREWALL|ACTOR_BG_HIDAN_DALM|ACTOR_BG_HIDAN_FSLIFT|ACTOR_BG_MIZU_MOVEBG|ACTOR_BG_HAKA_GATE|ACTOR_BG_GJYO_BRIDGE|ACTOR_BG_JYA_LIFT|ACTOR_BG_JYA_BIGMIRROR|ACTOR_BG_SPOT18_SHUTTER|ACTOR_OBJ_ELEVATOR|ACTOR_OBJ_LIFT|ACTOR_OBJ_OSHIHIKI|ACTOR_OBJ_MAKEOSHIHIKI' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+
+        # Link-movable puzzle objects must keep responsive keyframe sync.
+        rg -n 'IsLinkMovablePuzzleActor\(' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'ACTOR_OBJ_OSHIHIKI|ACTOR_OBJ_MAKEOSHIHIKI|ACTOR_OBJ_WARP2BLOCK|ACTOR_OBJ_HSBLOCK|ACTOR_BG_PUSHBOX' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'heartbeatMs\s*=\s*IsLinkMovablePuzzleActor\(actor\)\s*\?\s*120u\s*:\s*BG_KEYFRAME_INTERVAL_MS' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+
+        # Puzzle solve guard: solver must broadcast and peers must apply room-local switch state.
+        rg -n 'TryGetLinkPuzzleSwitchFlag\(' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'SendPacket_RoomEvent\("PUZZLE_SWITCH_SOLVED"' soh/soh/Network/Anchor/HookHandlers.cpp >/dev/null
+        rg -n 'eventType == "PUZZLE_SWITCH_SOLVED"' soh/soh/Network/Anchor/Packets/RoomEvent.cpp >/dev/null
+        rg -n 'Flags_SetSwitch\(gPlayState, switchFlag\)' soh/soh/Network/Anchor/Packets/RoomEvent.cpp >/dev/null
+
+        # RoomSnapshot must carry and apply solved puzzle switch states for late joiners.
+        rg -n 'payload\["puzzleSwitches"\]' soh/soh/Network/Anchor/Packets/RoomSnapshot.cpp >/dev/null
+        rg -n 'TryExtractLinkPuzzleSwitchFlag\(' soh/soh/Network/Anchor/Packets/RoomSnapshot.cpp >/dev/null
+        rg -n 'RoomSnapshot: applying \{\} puzzle switch state\(s\)' soh/soh/Network/Anchor/Packets/RoomSnapshot.cpp >/dev/null
+
   generate-soh-otr:
     runs-on: ubuntu-22.04
     steps:

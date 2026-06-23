@@ -35,6 +35,7 @@ void Anchor::SendPacket_BgKeyframeSync(const Actor* actor) {
     payload["type"]     = BG_KEYFRAME_SYNC;
     payload["quiet"]    = true;
     payload["sceneNum"] = gPlayState->sceneNum;
+    payload["actorId"]  = (int)actor->id;  // Used on receive side to filter EN_HORSE
     payload["actorKey"] = GetActorKey(actor, gPlayState->sceneNum);
     payload["posX"]     = actor->world.pos.x;
     payload["posY"]     = actor->world.pos.y;
@@ -55,6 +56,14 @@ void Anchor::HandlePacket_BgKeyframeSync(nlohmann::json payload) {
 
     s16 sceneNum = payload.value("sceneNum", (s16)SCENE_ID_MAX);
     if (sceneNum != gPlayState->sceneNum) return;
+
+    // Epona (ACTOR_EN_HORSE) runs independently on each client — her position
+    // must not be driven by the Master's keyframes, otherwise local Epona gets
+    // pulled to underground positions whenever terrain heights differ between
+    // clients (the source of the "Epona comes from underground" and
+    // "Client can't see/mount their own Epona" bugs).
+    const s16 actorId = (s16)payload.value("actorId", (int)-1);
+    if (actorId == ACTOR_EN_HORSE) return;
 
     if (!payload.contains("actorKey")) return;
 

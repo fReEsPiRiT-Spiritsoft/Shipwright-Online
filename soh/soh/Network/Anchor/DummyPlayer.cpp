@@ -5,6 +5,7 @@ extern "C" {
 #include "macros.h"
 #include "variables.h"
 #include "functions.h"
+#include "src/overlays/actors/ovl_En_Horse/z_en_horse.h"
 extern PlayState* gPlayState;
 
 void Player_UseItem(PlayState* play, Player* player, s32 item);
@@ -198,25 +199,38 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
 
             if (!phantom) {
                 // First frame of this client being on a horse — spawn the phantom.
+                // Use ACTOR_EN_HORSE (Epona) so the correct horse skin/skeleton is
+                // displayed.  EN_HORSE_NORMAL (pasture horse) uses Ingo's model
+                // which looks wrong when the remote player is on Epona.
+                //
+                // After spawn:
+                //   ENHORSE_ACT_IDLE  — stands idle, native update advances Skin
+                //                       so bone matrices stay valid (nulling update
+                //                       causes Skin_UpdateVertices SIGSEGV after ~30s).
+                //   ENHORSE_DRAW      — must be explicit; not set by all init paths.
+                //   ENHORSE_UNRIDEABLE— prevents the local Link from accidentally
+                //                       mounting the phantom instead of his own Epona.
+                //
+                // This actor is excluded from BG keyframe tracking/blending by the
+                // EN_HORSE guards in HookHandlers.cpp, so no position interference.
                 Vec3f spawnPos = actor->world.pos;
                 spawnPos.y -= Anchor::PHANTOM_HORSE_SADDLE_HEIGHT;
                 phantom = Actor_Spawn(&gPlayState->actorCtx, gPlayState,
-                                      ACTOR_EN_HORSE_NORMAL,
+                                      ACTOR_EN_HORSE,
                                       spawnPos.x, spawnPos.y, spawnPos.z,
                                       0, actor->shape.rot.y, 0,
-                                      /*params=*/0);
+                                      /*params=*/1);
                 if (phantom) {
-                    // Keep native EnHorseNormal_Update running — it advances the
-                    // Skin/skelAnime each frame.  Nulling update here leaves the
-                    // skeleton stale and causes Skin_UpdateVertices to SIGSEGV after
-                    // ~30 s when the bone matrices overflow.  Position is re-pinned
-                    // below every frame, so the update merely warms the animation.
+                    EnHorse* horse = (EnHorse*)phantom;
+                    horse->action         = ENHORSE_ACT_IDLE;
+                    horse->stateFlags    |= ENHORSE_DRAW | ENHORSE_UNRIDEABLE;
+                    horse->playerControlled = 0;
                     // Persistent across room-boundary draws (same as DummyPlayer).
-                    phantom->room   = -1;
-                    SPDLOG_INFO("[Anchor:Horse] Spawned phantom horse for client {} (actor={})",
+                    phantom->room = -1;
+                    SPDLOG_INFO("[Anchor:Horse] Spawned phantom Epona for client {} (actor={})",
                                 clientId, (void*)phantom);
                 }
-                // Store even if null so we don't re-attempt every frame.
+                // Store even if null so we don’t re-attempt every frame.
                 horseMap[clientId] = phantom;
             }
 

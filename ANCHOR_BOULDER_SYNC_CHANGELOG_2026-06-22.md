@@ -278,152 +278,126 @@ Inhalt:
   Subactors werden als abgeleitete States aus dem Boss-Actor-Set ermittelt.
 - Erfasste Kampfsemantik:
   - Stage-Fortschritt aus realen Support-/Zapper-Anzahlen
-  - Weakpoint/HP-Hits
-  - Death-Commit
-  - Subactor-Verluste als `BOSS_SUBACTOR_KILL` pro fehlendem ActorKey
-- Snapshot enthaelt zusaetzlich `supportAlive` und `zapperAlive`.
 
-Registry-Priorisierung:
-- `BossSyncRegistry.cpp` registriert jetzt spezifische Adapter vor dem
-  generischen Fallback:
-  - Barinade
-  - Big Octo
-  - GenericBossHealthPhase
+### 19) Dungeon-BG-Mover freigegeben statt eingefroren
+Aktualisiert in `soh/soh/Network/Anchor/HookHandlers.cpp`:
+- `ShouldKeepDungeonBgActorUpdating(...)` deckt jetzt die wesentlichen
+  beweglichen Dungeon- und Raum-Actors ab, statt nur eine kleine Teilmenge.
+- Die Liste umfasst jetzt u. a. Fire Temple, Forest Temple, Water Temple,
+  Shadow Temple, Spirit Temple, Bottom of the Well, Ice Cavern und die
+  typischen Schiebe-/Lift-/Shutter-Objekte.
 
 Zweck:
-- Jabu-Boss-Encounter wird nicht mehr nur HP-generisch betrachtet, sondern
-  bildet Tentakel-/Zapper-Fortschritt ueber kanonische `BOSS_*`-Events ab.
+- Non-Master-Clients behalten ihre nativen Actor-Updates genau dort, wo
+  kollisions- oder kontaktabhängige Dungeon-Mechanik sonst kaputtgehen würde.
+- Bewegliche Dungeon-Objekte fühlen sich dadurch weniger "gefreezed" und mehr
+  wie normale Engine-Objekte an.
 
-### 19) Morpha-Spezialadapter (Water Temple Boss) mit Tentakel-Lifecycle
+Ergaenzt:
+- `.github/workflows/generate-builds.yml` pruft jetzt die wichtigsten
+  Dungeon-Mover-IDs als Guardrail mit ab.
+
+### 20) Link-verschiebbare Puzzleobjekte mit responsive Sync
+Aktualisiert in `soh/soh/Network/Anchor/HookHandlers.cpp`:
+- Neuer Klassifizierer `IsLinkMovablePuzzleActor(...)` fuer interaktive
+  Schiebe-/Raetselobjekte (`ACTOR_OBJ_OSHIHIKI`, `ACTOR_OBJ_MAKEOSHIHIKI`,
+  `ACTOR_OBJ_WARP2BLOCK`, `ACTOR_OBJ_HSBLOCK`, `ACTOR_BG_PUSHBOX`).
+- BG-Keyframe-Sender nutzt fuer diese Actors ein dichtes Heartbeat-Intervall
+  von `120ms` statt des allgemeinen Intervalls.
+- Client-seitig wird fuer diese Actors ein staerkeres `Math_ApproachF`-Profil
+  verwendet, damit die Bewegung beim Schieben/Ziehen direkter und stabiler
+  aussieht.
+
+Zweck:
+- Von Link bewegte Objekte (inkl. Waldtempel-/Puzzle-Situationen) fuehlen sich
+  fuer Non-Master-Clients weniger traege an und bleiben sauber in Sync.
+
+Ergaenzt:
+- `.github/workflows/generate-builds.yml` prueft den neuen Puzzle-Responder
+  (`IsLinkMovablePuzzleActor`, Heartbeat-Formel) als Guardrail.
+
+### 21) Schieberaetsel-Absicherung: Loeser broadcastet Solve-State
+Aktualisiert:
+- `soh/soh/Network/Anchor/HookHandlers.cpp`
+  - Neuer Helper `TryGetLinkPuzzleSwitchFlag(...)` fuer switch-gebundene
+    Pushblock-Raetsel (`Obj_Oshihiki`-basiert).
+  - Per-Frame Detection erkennt den Uebergang `switchFlag: OFF -> ON` lokal
+    beim loesenden Spieler und sendet einmalig `ROOM_EVENT`
+    `PUZZLE_SWITCH_SOLVED`.
+  - Dedupe-Maps verhindern mehrfaches Senden pro `scene+room+switchFlag`.
+- `soh/soh/Network/Anchor/Packets/RoomEvent.cpp`
+  - Neuer Event-Zweig `PUZZLE_SWITCH_SOLVED`.
+  - Event wird nur im selben Raum angewendet; dort wird der `switchFlag` per
+    `Flags_SetSwitch(...)` gesetzt, falls noch nicht gesetzt.
+
+Zweck:
+- Der Client, der das Schieberaetsel wirklich loest, gibt den geloe sten State
+  robust an alle anderen im Raum weiter.
+- Verhindert, dass Non-Solver-Clients bei Pushblock-Raetseln in einem alten
+  Zwischenzustand haengen bleiben.
+
+### 22) Late-Join Absicherung: Puzzle-Solve-State im RoomSnapshot
+Aktualisiert:
+- `soh/soh/Network/Anchor/Packets/RoomSnapshot.cpp`
+  - Senderseite (`SendPacket_RoomSnapshot`): `puzzleSwitches[]` wird gefuellt
+    mit aktuell gesetzten Pushblock-Switches im Raum (`switchFlag`, `actorId`,
+    `actorKey`).
+  - Empfaengerseite (`HandlePacket_RoomSnapshot`): `puzzleSwitches[]` wird
+    sofort angewendet und fehlende Switch-Flags werden per `Flags_SetSwitch(...)`
+    gesetzt.
+
+Zweck:
+- Wenn ein Spieler den Raum spaeter betritt, startet er direkt mit dem bereits
+  geloesten Schieberaetsel-Stand, auch wenn das urspruengliche Solve-Event vor
+  seinem Join passiert ist.
+
+Ergaenzt:
+- `.github/workflows/generate-builds.yml` prueft Snapshot-Sende- und
+  Snapshot-Apply-Pfade fuer `puzzleSwitches` als Guardrail.
+
+## Wave 3 Detailadapter (konsolidiert)
+
+### Morpha-Spezialadapter (Water Temple Boss)
 Neu:
 - `soh/soh/Network/Anchor/BossSync/MorphaBossAdapter.cpp`
 
 Inhalt:
-- Adapter greift exklusiv fuer `ACTOR_BOSS_MO` in `SCENE_WATER_TEMPLE_BOSS`.
-- Verarbeitung ueber Core-Actor (`params == -1`), Tentakel aus Boss-Actor-Set abgeleitet.
-- Erfasste Kampfsemantik:
-  - Phase aus Core-State-Enum (Underwater/Stunned/Attack/Retreat) + Tentakel-Zählung
-  - `BOSS_WEAKPOINT_DESTROY` bei Tentakel-Verlust (Anzahländerung)
-  - `BOSS_WEAKPOINT_HIT` bei Core-HP-Verlust
-  - `BOSS_DEATH_COMMIT` bei Core-Tod
-  - `BOSS_SUBACTOR_KILL` pro verschwundenem Tentakel
-- Snapshot enthaelt zusaetzlich `tentaclesAlive`.
+- Exklusiv für `ACTOR_BOSS_MO` in `SCENE_WATER_TEMPLE_BOSS`.
+- Core-/Tentakel-Lifecycle mit kanonischen Events (`BOSS_WEAKPOINT_*`,
+  `BOSS_SUBACTOR_KILL`, `BOSS_DEATH_COMMIT`).
+- Snapshot enthält zusätzliche Tentakel-Informationen.
 
-Registry-Update:
-- `BossSyncRegistry.cpp` ordnet Morpha-Adapter vor Big-Octo und GenericAdapter ein.
-
-Zweck:
-- Water-Temple-Boss-Encounter nutzt jetzt echte Tentakel-Lifecycle und Core-State-Machine
-  statt nur HP-Heuristik.
-
-### 20) Bongo-Bongo-Spezialadapter (Shadow Temple Boss) mit Hand-Lifecycle
+### Bongo-Bongo-Spezialadapter (Shadow Temple Boss)
 Neu:
 - `soh/soh/Network/Anchor/BossSync/BongoBongoAdapter.cpp`
 
 Inhalt:
-- Adapter greift exklusiv fuer `ACTOR_BOSS_SST` in `SCENE_SHADOW_TEMPLE_BOSS`.
-- Verarbeitung ueber Head-Actor (`params == -1`), beide Haende aus Boss-Actor-Set abgeleitet.
-- Hand-Params: `BONGO_LEFT_HAND = 0`, `BONGO_RIGHT_HAND = 1`
-- Erfasste Kampfsemantik:
-  - Phase aus Hand-Zählung: 0 (beide alive), 1 (eine alive), 2 (keine alive), 3 (tot)
-  - `BOSS_WEAKPOINT_DESTROY` bei Hand-Verlust (Anzahländerung)
-  - `BOSS_WEAKPOINT_HIT` bei Head-HP-Verlust (Eye-Expose-Phase)
-  - `BOSS_DEATH_COMMIT` bei Head-Tod
-  - `BOSS_SUBACTOR_KILL` pro verschwundener Hand
-- Snapshot enthaelt `handsAlive`.
+- Exklusiv für `ACTOR_BOSS_SST` in `SCENE_SHADOW_TEMPLE_BOSS`.
+- Head-/Hand-Lifecycle mit Weakpoint-/Subactor-Events.
+- Snapshot enthält zusätzliche Hand-Informationen.
 
-Registry-Update:
-- `BossSyncRegistry.cpp` ordnet Bongo-Bongo-Adapter ein (vor BigOcto/Generic).
-
-Zweck:
-- Shadow-Temple-Boss-Encounter nutzt jetzt echte Hand-Lifecycle statt nur HP-Heuristik.
-- Eye-Expose-Phase wird aus Hand-Zustand abgeleitet.
-
-### 21) Volvagia-Spezialadapter (Fire Temple Boss) mit Arena-Collapse-Logik
+### Volvagia-Spezialadapter (Fire Temple Boss)
 Neu:
 - `soh/soh/Network/Anchor/BossSync/VolvagiaAdapter.cpp`
 
 Inhalt:
-- Adapter greift exklusiv fuer `ACTOR_BOSS_FD` und `ACTOR_BOSS_FD2` in `SCENE_FIRE_TEMPLE_BOSS`.
-- Verarbeitet beide Flying-Form (`ACTOR_BOSS_FD`, params=0) und Hole-Form (`ACTOR_BOSS_FD2`).
-- Erfasste Kampfsemantik:
-  - Phase aus State-Enum: FlyMain/FlyChase (0) -> FlyHole/DropRocks (1) -> Burrow/Emerge (1/2) -> Death (3)
-  - Arena-Collapse erkannt via `ACTOR_BG_VB_SIMA` (Platform) colChkInfo.health == 0
-  - `BOSS_STAGE_ENTER` bei Arena-Collapse und Phase-Uebergängen
-  - `BOSS_WEAKPOINT_HIT` bei HP-Verlust
-  - `BOSS_DEATH_COMMIT` bei Volvagia-Tod
-- Snapshot enthaelt zusaetzlich `arenaCollapsed`, `isHole`, `stateId`.
+- Exklusiv für `ACTOR_BOSS_FD`/`ACTOR_BOSS_FD2` in `SCENE_FIRE_TEMPLE_BOSS`.
+- Flying-/Hole-State-Transitions und Arena-Collapse-Semantik.
+- Snapshot enthält `arenaCollapsed`, `isHole`, `stateId`.
 
-Registry-Update:
-- `BossSyncRegistry.cpp` ordnet Volvagia-Adapter ein.
-
-Zweck:
-- Fire-Temple-Boss-Encounter nutzt jetzt echte Flying/Hole State-Transitions
-  und Arena-Destruction-Tracking statt nur HP-Heuristik.
-
-### 22) Twinrova-Spezialadapter (Gerudo's Fortress Boss) mit Form-Switching
+### Twinrova-Spezialadapter (Spirit Temple Boss)
 Neu:
 - `soh/soh/Network/Anchor/BossSync/TwinrovaAdapter.cpp`
 
 Inhalt:
-- Adapter greift exklusiv fuer `ACTOR_BOSS_TW` in `SCENE_GERUDO_FORTRESS_BOSS`.
-- Verarbeitet Form-Wechsel: Koume (Fire), Kotake (Ice), Fusion (Twinrova).
-- Erfasste Kampfsemantik:
-  - Phase aus Form-ID: Koume (0) -> Kotake (1) -> Fusion (2) -> Dead (3)
-  - `BOSS_STAGE_ENTER` bei Form-Wechsel (Verdopped Merge-Sequenz)
-  - `BOSS_WEAKPOINT_HIT` bei HP-Verlust einer Form
-  - `BOSS_DEATH_COMMIT` bei Twinrova-Tod
-  - Vulnerable-Window-Tracking aus State-Machine
-- Snapshot enthaelt zusaetzlich `currentForm`, `phaseCountsPerForm`.
+- Exklusiv für `ACTOR_BOSS_TW` in `SCENE_SPIRIT_TEMPLE_BOSS`.
+- Formwechsel (Koume/Kotake/Twinrova) inkl. Vulnerability-Phasen.
+- Snapshot enthält Form-/Stun-Informationen.
 
-Registry-Update:
-- `BossSyncRegistry.cpp` ordnet Twinrova-Adapter ein.
-
-Zweck:
-- Gerudo-Fortress-Boss-Encounter nutzt jetzt echte Form-Transitions
-  und Element-Vulnerability-Phasen statt nur generischer HP-Heuristik.
-
-### 22) Twinrova-Spezialadapter (Spirit Temple Boss) mit Form-Switching
-Neu:
-- `soh/soh/Network/Anchor/BossSync/TwinrovaAdapter.cpp`
-
-Inhalt:
-- Adapter greift exklusiv fuer `ACTOR_BOSS_TW` in `SCENE_SPIRIT_TEMPLE_BOSS`.
-- Verarbeitet Form-Wechsel via actor.params: Koume (1, Feuer), Kotake (0, Eis), Twinrova (2, Fusion).
-- Erfasste Kampfsemantik:
-  - Phase aus Form-ID: Koume (0) -> Kotake (1) -> Twinrova (2) -> Dead (3)
-  - `BOSS_STAGE_ENTER` bei Form-Wechsel (Merge-Sequenz)
-  - `BOSS_WEAKPOINT_DESTROY` bei Stunned-Status (Element-Vulnerability)
-  - `BOSS_WEAKPOINT_HIT` bei HP-Verlust einer Form
-  - `BOSS_DEATH_COMMIT` bei Twinrova-Tod
-- Snapshot enthaelt `formId`, `formName`, `stunned`.
-
-Registry-Update:
-- `BossSyncRegistry.cpp` ordnet Twinrova-Adapter ein.
-
-Zweck:
-- Spirit-Temple-Boss-Encounter nutzt jetzt echte Form-Transitions
-  und Element-Vulnerability-Phasen statt nur generischer HP-Heuristik.
-- Forme (Koume/Kotake/Twinrova) wird aus actor.params korrekt erkannt.
-
-### WAVE 3 ADAPTER STATUS: KOMPLETT ✅
-Alle 5/5 Wave 3 Endboss-Adapter implementiert und registriert:
-1. ✅ Barinade (Jabu Jabu Boss) – Subactor Lifecycle
-2. ✅ Morpha (Water Temple Boss) – Tentakel Lifecycle
-3. ✅ Bongo-Bongo (Shadow Temple Boss) – Hand Lifecycle
-4. ✅ Volvagia (Fire Temple Boss) – Arena Collapse + Flying/Hole States
-5. ✅ Twinrova (Spirit Temple Boss) – Form Switching
-6. ✅ BigOcto Miniboss (Jabu Miniboss) – 2-Phase + Late-Join Gate
-7. ✅ Generic Fallback – HP-Heuristic fuer alle verbleibenden 9 Bosses
-
-Registry-Prioritaet:
-- Barinade (SCENE_JABU_JABU_BOSS, ACTOR_BOSS_VA, body-only)
-- Morpha (SCENE_WATER_TEMPLE_BOSS, ACTOR_BOSS_MO, core-only)
-- Bongo-Bongo (SCENE_SHADOW_TEMPLE_BOSS, ACTOR_BOSS_SST, head-only)
-- Volvagia (SCENE_FIRE_TEMPLE_BOSS, ACTOR_BOSS_FD/FD2, flying/hole)
-- Twinrova (SCENE_SPIRIT_TEMPLE_BOSS, ACTOR_BOSS_TW, form-based)
-- BigOcto (SCENE_JABU_JABU, ACTOR_EN_BIGOKUTA, miniboss-only)
-- Generic (all scenes/bosses) – fallback fuer Deku, Dodongo, Morpha-Body, FD-unused
+### Wave 3 Adapterstatus
+- Wave 3 Endboss-Adapter (Barinade, Morpha, Bongo-Bongo, Volvagia,
+  Twinrova) plus BigOcto-Miniboss sind implementiert und registriert.
+- Registry priorisiert spezifische Adapter vor dem Generic-Fallback.
 
 ### 23) Ganon2-Spezialisadapter (Final Boss Beast Form) mit Float-Health
 Neu:

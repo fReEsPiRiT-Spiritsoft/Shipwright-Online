@@ -31,6 +31,28 @@ bool IsBossScene(s16 sceneNum) {
             return false;
     }
 }
+
+bool IsLinkPuzzleSwitchActor(const Actor* actor) {
+    if (actor == nullptr) {
+        return false;
+    }
+
+    return actor->id == ACTOR_OBJ_OSHIHIKI || actor->id == ACTOR_OBJ_MAKEOSHIHIKI;
+}
+
+bool TryExtractLinkPuzzleSwitchFlag(const Actor* actor, s16* outSwitchFlag) {
+    if (!IsLinkPuzzleSwitchActor(actor) || outSwitchFlag == nullptr) {
+        return false;
+    }
+
+    const s16 switchFlag = (actor->params >> 8) & 0x3F;
+    if (switchFlag < 0 || switchFlag > 0x3F) {
+        return false;
+    }
+
+    *outSwitchFlag = switchFlag;
+    return true;
+}
 }
 
 /**
@@ -167,6 +189,46 @@ void Anchor::SendPacket_RoomSnapshot(uint32_t targetClientId) {
     }
     payload["boulders"] = boulders;
 
+    // ── Puzzle switch snapshot (push-block style) ─────────────────────────
+    // Late-join safety: include currently solved push-block switch flags so
+    // joiners apply solved puzzle state immediately without waiting for a
+    // transition event that may have happened before they joined.
+    nlohmann::json puzzleSwitches = nlohmann::json::array();
+    std::unordered_set<int> seenPuzzleSwitches;
+    for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
+        Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
+        while (actor != nullptr) {
+            if (actor->room != curRoom && actor->room != -1) {
+                actor = actor->next;
+                continue;
+            }
+
+            s16 switchFlag = -1;
+            if (!TryExtractLinkPuzzleSwitchFlag(actor, &switchFlag)) {
+                actor = actor->next;
+                continue;
+            }
+
+            if (!Flags_GetSwitch(gPlayState, switchFlag)) {
+                actor = actor->next;
+                continue;
+            }
+
+            if (!seenPuzzleSwitches.insert((int)switchFlag).second) {
+                actor = actor->next;
+                continue;
+            }
+
+            nlohmann::json p;
+            p["switchFlag"] = (int)switchFlag;
+            p["actorId"] = (int)actor->id;
+            p["actorKey"] = GetActorKey(actor, sceneNum);
+            puzzleSwitches.push_back(p);
+            actor = actor->next;
+        }
+    }
+    payload["puzzleSwitches"] = puzzleSwitches;
+
     // ── Boss sync snapshot (Phase 1 infrastructure) ───────────────────────
     // Cache contains last known room-local boss events/state by
     // roomBossKey="{scene}_{room}_{bossActorKey}". Send only entries for the
@@ -248,8 +310,8 @@ void Anchor::SendPacket_RoomSnapshot(uint32_t targetClientId) {
         payload["brMatchState"] = brState;
     }
 
-    SPDLOG_INFO("[Anchor] RoomSnapshot: sending {} enemy + {} BG + {} boulder + {} boss state(s) to client {}",
-                enemies.size(), bgObjects.size(), boulders.size(), bossStates.size(), targetClientId);
+    SPDLOG_INFO("[Anchor] RoomSnapshot: sending {} enemy + {} BG + {} boulder + {} puzzle + {} boss state(s) to client {}",
+                enemies.size(), bgObjects.size(), boulders.size(), puzzleSwitches.size(), bossStates.size(), targetClientId);
     SendJsonToRemote(payload);
 }
 
@@ -371,6 +433,21 @@ void Anchor::HandlePacket_RoomSnapshot(nlohmann::json payload) {
         SPDLOG_INFO("[Anchor] RoomSnapshot: applying {} rolling boulder state(s)", boulderArray.size());
         for (const auto& b : boulderArray) {
             QueueOrApplyBoulderSpawn(b, true);
+        }
+    }
+
+    if (payload.contains("puzzleSwitches") && roomState.syncBGObjects) {
+        const auto& puzzleArray = payload["puzzleSwitches"];
+        SPDLOG_INFO("[Anchor] RoomSnapshot: applying {} puzzle switch state(s)", puzzleArray.size());
+        for (const auto& p : puzzleArray) {
+            const s16 switchFlag = (s16)p.value("switchFlag", -1);
+            if (switchFlag < 0 || switchFlag > 0x3F) {
+                continue;
+            }
+
+            if (!Flags_GetSwitch(gPlayState, switchFlag)) {
+                Flags_SetSwitch(gPlayState, switchFlag);
+            }
         }
     }
 
