@@ -172,6 +172,14 @@ bool TryGetLinkPuzzleSwitchFlag(const Actor* actor, s16* outSwitchFlag) {
     return true;
 }
 
+// Rolling boulder actors (EN_BW = Death Mountain path, EN_GOROIWA = Dodongos Cavern)
+// use spawn-only sync and run their scripted route locally on every client.
+// This helper is used throughout RegisterHooks to exclude them from all
+// continuous sync loops (position, HP, aggro, BG-keyframe).
+static bool IsRollingBoulderActor(s16 actorId) {
+    return actorId == ACTOR_EN_BW || actorId == ACTOR_EN_GOROIWA;
+}
+
 void func_8086ED70(BgBombwall* bgBombwall, PlayState* play);
 void BgBreakwall_Wait(BgBreakwall* bgBreakwall, PlayState* play);
 void BgHakaZou_WaitForHit(BgHakaZou* bgHakaZou, PlayState* play);
@@ -303,8 +311,7 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnFlagSet, isConnected,
               [&](s16 flagType, s16 flag) { SendPacket_SetFlag(SCENE_ID_MAX, flagType, flag); });
 
-            case ACTOR_BG_MORI_BIGST:
-            case ACTOR_BG_MORI_HINERI:
+    COND_HOOK(OnFlagUnset, isConnected,
               [&](s16 flagType, s16 flag) { SendPacket_UnsetFlag(SCENE_ID_MAX, flagType, flag); });
 
     COND_HOOK(OnSceneFlagSet, isConnected,
@@ -322,7 +329,6 @@ void Anchor::RegisterHooks() {
     COND_HOOK(OnRandoSetIsSkipped, isConnected, [&](RandomizerCheck rc, bool isSkipped) {
         if (!isHandlingUpdateTeamState) {
             SendPacket_SetCheckStatus(rc);
-            case ACTOR_BG_JYA_MEGAMI:
         }
     });
 
@@ -331,8 +337,6 @@ void Anchor::RegisterHooks() {
 
     COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON2, isConnected, [&](void* refActor) {
         SendPacket_GameComplete();
-            case ACTOR_BG_BOWL_WALL:
-            case ACTOR_BG_JYA_BIGMIRROR:
         // Battle Royale: erster Ganondorf-Sieg = Match-Sieg.
         // Der lokale Spieler sendet MATCH_END mit sich selbst als Sieger.
         if (roomState.battleRoyaleMode && brMatchActive) {
