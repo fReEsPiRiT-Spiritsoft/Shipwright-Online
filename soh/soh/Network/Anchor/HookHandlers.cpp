@@ -862,6 +862,10 @@ void Anchor::RegisterHooks() {
         announcedPuzzleSwitchSolveByKey.clear();
         lastBossEventSeqByKey.clear();
         bossSnapshotStateByKey.clear();
+        // Reset all boss adapter tracking maps so 'initialized=true' doesn't
+        // persist across scene reloads (e.g., player dies and restarts boss fight).
+        // Without this, CaptureTransition skips BOSS_STAGE_ENTER on the fresh actor.
+        AnchorBossSync::ResetAllBossSyncAdapters();
         recentCollectibleSpawns.clear();
         // Enemies respawn on every room entry, so per-scene kill lists are stale
         // after a scene transition.  Clear to avoid phantom kills on next visit.
@@ -1746,39 +1750,24 @@ void Anchor::RegisterHooks() {
     // #endregion
 
     // #region Cutscene Sync
-    // Detect when the local player's in-scene cutscene transitions from IDLE to
-    // running. If at least one connected partner is in the same room+scene AND
-    // within the enemy-sync radius, broadcast a TRIGGER_CUTSCENE packet so their
-    // client starts the same cutscene.
-    // Authority: both sides may independently trigger CSes (no authority gate).
+    // Only the RoomMaster sends TRIGGER_CUTSCENE packets.
+    // Non-masters must NOT send because:
+    //   1. Their empty (no-script) CS quickly transitions to IDLE and they would
+    //      send CS_STATE_IDLE back, prematurely aborting the master's cutscene.
+    //   2. Feedback loops: packet → cs-start → cs-end → packet → ...
+    // The only packet we need from master is CS_STATE_IDLE: a release signal
+    // for any client stuck in a non-IDLE CS state (locally-triggered CS whose
+    // ending actor is frozen, or residual state from a previous visit).
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
         if (!roomState.syncCutscenes || !roomState.syncEnemies) return;
         if (!IsSaveLoaded() || !gPlayState) return;
+        if (!IsRoomMaster()) return; // only master sends
 
         static u8 prevCsState = CS_STATE_IDLE;
         u8 curCsState = (u8)gPlayState->csCtx.state;
 
-        if (prevCsState == CS_STATE_IDLE && curCsState != CS_STATE_IDLE) {
-            // Cutscene just started — check whether any partner qualifies.
-            Player* player = GET_PLAYER(gPlayState);
-            for (auto& [clientId, client] : clients) {
-                if (client.self || !client.online || !client.player) continue;
-                if (client.sceneNum != gPlayState->sceneNum) continue;
-
-                // Radius check (0 = infinite / disabled).
-                if (roomState.syncRadius > 0) {
-                    f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
-                    if (Math3D_Vec3fDistSq(&player->actor.world.pos,
-                                          &client.player->actor.world.pos) > rSq) continue;
-                }
-                // At least one nearby partner qualifies — send and stop searching.
-                SendPacket_TriggerCutscene(curCsState);
-                break;
-            }
-        }
-
-        // When our own cutscene ends, tell all clients to force-exit their CS so
-        // they don't stay frozen in the letterbox forever (softlock bug).
+        // When the master's cutscene ends, broadcast CS_STATE_IDLE so any
+        // non-master stuck in a locally-triggered CS is cleanly released.
         if (prevCsState != CS_STATE_IDLE && curCsState == CS_STATE_IDLE) {
             SendPacket_TriggerCutscene(CS_STATE_IDLE);
         }

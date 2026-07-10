@@ -59,7 +59,10 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
         return "BigOctoMinibossAdapter";
     }
 
-    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
+    void Reset() override {
+        gBigOctoTrack.clear();
+    }
+(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }

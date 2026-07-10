@@ -104,8 +104,13 @@ void Anchor::SendPacket_RoomSnapshot(uint32_t targetClientId) {
     for (int cat : { ACTORCAT_ENEMY, ACTORCAT_BOSS }) {
         Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
         while (actor != nullptr) {
-            // Only include actors that belong to the current room.
-            if (actor->room == curRoom) {
+            // Include actors that belong to the current room.
+            // Boss actors in boss scenes have room == -1 (global actor), so they
+            // would be excluded by a strict curRoom check and never appear in the
+            // snapshot. Include all global ACTORCAT_BOSS actors unconditionally.
+            const bool inRoom = (actor->room == curRoom) ||
+                                (cat == ACTORCAT_BOSS && actor->room == -1);
+            if (inRoom) {
                 nlohmann::json e;
                 e["key"]         = GetActorKey(actor, sceneNum);
                 e["hp"]          = (int)actor->colChkInfo.health;

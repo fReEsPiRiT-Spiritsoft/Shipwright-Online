@@ -47,4 +47,13 @@ std::shared_ptr<BossSyncAdapter> FindBossSyncAdapter(s16 sceneNum, s16 actorId) 
     return nullptr;
 }
 
+void ResetAllBossSyncAdapters() {
+    RegisterDefaultBossSyncAdapters();
+    for (const auto& adapter : gBossSyncAdapters) {
+        if (adapter) {
+            adapter->Reset();
+        }
+    }
+}
+
 } // namespace AnchorBossSync

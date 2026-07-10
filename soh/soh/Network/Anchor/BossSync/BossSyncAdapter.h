@@ -42,6 +42,11 @@ class BossSyncAdapter {
 
     virtual const char* Name() const = 0;
 
+    // Called when the scene changes so per-adapter tracking maps are cleared.
+    // Without this, a stale 'initialized=true' entry prevents BOSS_STAGE_ENTER
+    // from being re-emitted after a player dies and the boss room is reloaded.
+    virtual void Reset() {}
+
     virtual nlohmann::json CaptureTransition(PlayState* play, Actor* actor) = 0;
 
     virtual void ApplyEvent(PlayState* play, const nlohmann::json& payload) = 0;

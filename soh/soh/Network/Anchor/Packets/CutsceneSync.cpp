@@ -48,17 +48,30 @@ void Anchor::HandlePacket_TriggerCutscene(nlohmann::json payload) {
     u8 csState = payload.value("csState", (u8)CS_STATE_IDLE);
 
     if (csState == CS_STATE_IDLE) {
-        // Sender's cutscene ended — force-exit ours if we are still stuck in one.
+        // Master's cutscene ended — release any client that is still stuck in a
+        // non-IDLE CS state (e.g. a locally-triggered CS whose ending actor is
+        // frozen by enemy sync, or any leftover state from a previous session).
         // func_8006450C cleanly resets csCtx (state → IDLE, unk_0C → 0).
         if (gPlayState->csCtx.state != CS_STATE_IDLE) {
             func_8006450C(gPlayState, &gPlayState->csCtx);
         }
-    } else if (csState == CS_STATE_SKIPPABLE_INIT) {
-        // Only start if we are currently idle (don't restart a CS already running).
-        if (gPlayState->csCtx.state != CS_STATE_IDLE) return;
-        func_80064520(gPlayState, &gPlayState->csCtx);
-    } else if (csState == CS_STATE_UNSKIPPABLE_INIT) {
-        if (gPlayState->csCtx.state != CS_STATE_IDLE) return;
-        func_80064534(gPlayState, &gPlayState->csCtx);
     }
+    // INTENTIONALLY no func_80064520 / func_80064534 calls for non-IDLE states.
+    //
+    // Root cause of the freeze+letterbox bug:
+    //   Calling func_80064520/func_80064534 sets csCtx.state = SKIPPABLE_INIT but
+    //   does NOT set csCtx.scriptList[0].script — that is done by the actor that
+    //   normally triggers the cutscene.  Without a valid script pointer the CS
+    //   subsystem enters an indeterminate state: letterbox appears, the player
+    //   is frozen, but no commands ever execute.  The state never reaches IDLE
+    //   on its own, causing a permanent softlock until func_8006450C is called.
+    //
+    // Correct behaviour:
+    //   Actor-driven cutscenes run on ALL clients because the boss/trigger actor
+    //   is NOT frozen by ShouldActorUpdate (ACTORCAT_BOSS runs normally on every
+    //   client).  The actor sets csCtx.scriptList[0] and calls func_80064520
+    //   itself — so the CS plays naturally without network intervention.
+    //   Non-master clients that do NOT have the CS triggered locally (different
+    //   local state) simply play freely while the master watches the cutscene.
+    //   The CS_STATE_IDLE release above ensures they are un-stuck if needed.
 }

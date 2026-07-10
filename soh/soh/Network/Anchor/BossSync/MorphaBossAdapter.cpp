@@ -105,7 +105,10 @@ class MorphaBossAdapter : public BossSyncAdapter {
         return "MorphaBossAdapter";
     }
 
-    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
+    void Reset() override {
+        gMorphaTrack.clear();
+    }
+(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }

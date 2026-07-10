@@ -190,10 +190,15 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         state["lastEventType"] = eventType;
         state["lastSeq"] = seq;
         state["masterFrame"] = masterFrame;
-        if (eventData.contains("phaseId"))  state["phaseId"] = eventData["phaseId"];
-        if (eventData.contains("subState")) state["subState"] = eventData["subState"];
-        if (eventData.contains("invuln"))   state["invuln"] = eventData["invuln"];
+        if (eventData.contains("phaseId"))       state["phaseId"]       = eventData["phaseId"];
+        if (eventData.contains("subState"))      state["subState"]      = eventData["subState"];
+        if (eventData.contains("invuln"))        state["invuln"]        = eventData["invuln"];
         if (eventData.contains("weakpointMask")) state["weakpointMask"] = eventData["weakpointMask"];
+        // hp and bossActorId are critical for master-migration: if this client
+        // later becomes master, it must be able to send a correct bossStates
+        // snapshot to late joiners. Without hp, ApplyBossSnapshot uses default=1.
+        if (eventData.contains("hp"))            state["hp"]            = eventData["hp"];
+        if (eventData.contains("bossActorId"))   state["bossActorId"]   = eventData["bossActorId"];
         state["lateJoinCanSkipIntro"] = eventData.value("lateJoinCanSkipIntro", true);
 
         const s16 bossActorId = (s16)eventData.value("bossActorId", (int)-1);
@@ -375,11 +380,13 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         GameInteractor_ExecuteOnOcarinaSongAction();
 
     } else if (eventType == "BOSS_DEATH_COMMIT") {
-        // Generic fallback: only runs if no boss adapter handled the event.
-        // Adapters that implement ApplyEvent for BOSS_DEATH_COMMIT take priority
-        // to avoid double Actor_Kill (first from adapter, then from this fallback).
-        if (adapterHandled) return;
-
+        // Set hp=0 so the boss's own AI triggers its native death sequence
+        // (animation, sound, cutscene). This matches the master's visual.
+        // We do NOT call Actor_Kill here — the definitive kill arrives later
+        // via the ACTOR_KILLED packet emitted by the master's OnActorKill hook
+        // once its own death sequence completes.
+        // If the boss AI on this client also calls Actor_Kill (normal for OoT bosses),
+        // the subsequent ACTOR_KILLED is a safe no-op on an already-dead actor.
         std::string bossActorKey = eventData.value("bossActorKey", eventKey);
         if (bossActorKey.empty()) return;
 
@@ -387,8 +394,8 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
             while (actor != nullptr) {
                 if (GetActorKey(actor, gPlayState->sceneNum) == bossActorKey) {
-                    if (actor->update != nullptr) {
-                        Actor_Kill(actor);
+                    if (actor->update != nullptr && actor->colChkInfo.health != 0) {
+                        actor->colChkInfo.health = 0;
                     }
                     return;
                 }

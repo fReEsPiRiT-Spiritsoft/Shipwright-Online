@@ -93,7 +93,10 @@ class VolvagiaAdapter : public BossSyncAdapter {
         return "VolvagiaAdapter";
     }
 
-    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
+    void Reset() override {
+        gVolvagiaTrack.clear();
+    }
+(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }

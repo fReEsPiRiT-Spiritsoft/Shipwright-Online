@@ -72,7 +72,10 @@ class TwinrovaAdapter : public BossSyncAdapter {
         return "TwinrovaAdapter";
     }
 
-    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
+    void Reset() override {
+        gTwinrovaTrack.clear();
+    }
+(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }
