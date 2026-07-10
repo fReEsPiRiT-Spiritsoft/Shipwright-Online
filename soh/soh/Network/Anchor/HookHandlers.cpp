@@ -8,6 +8,7 @@
 #include "soh/frame_interpolation.h"
 #include "soh/OTRGlobals.h"
 #include "soh/Network/Anchor/BossSync/BossSyncDispatch.h"
+#include "soh/Network/Anchor/BossSync/BossSyncRegistry.h"
 
 extern "C" {
 #include "variables.h"
