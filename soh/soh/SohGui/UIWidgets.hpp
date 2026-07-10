@@ -776,7 +776,7 @@ bool Combobox(std::string label, T* value, const std::vector<const char*>& combo
     ImGui::BeginDisabled(options.disabled);
     PushStyleCombobox(options.color);
 
-    const char* longest;
+    const char* longest = nullptr;
     size_t length = 0;
     for (auto& string : comboVector) {
         size_t len = strlen(string);
@@ -785,7 +785,7 @@ bool Combobox(std::string label, T* value, const std::vector<const char*>& combo
             length = len;
         }
     }
-    float comboWidth = CalcComboWidth(longest, options.flags);
+    float comboWidth = CalcComboWidth(longest != nullptr ? longest : "", options.flags);
 
     ImGui::AlignTextToFramePadding();
     if (options.labelPosition != LabelPositions::None) {
@@ -949,7 +949,7 @@ bool Combobox(std::string label, T* value, const char* (&comboArray)[N], const C
     ImGui::BeginDisabled(options.disabled);
     PushStyleCombobox(options.color);
 
-    const char* longest;
+    const char* longest = nullptr;
     size_t length = 0;
     for (size_t i = 0; i < N; i++) {
         size_t len = strlen(comboArray[i]);
@@ -958,7 +958,7 @@ bool Combobox(std::string label, T* value, const char* (&comboArray)[N], const C
             length = len;
         }
     }
-    float comboWidth = CalcComboWidth(longest, options.flags);
+    float comboWidth = CalcComboWidth(longest != nullptr ? longest : "", options.flags);
 
     ImGui::AlignTextToFramePadding();
     if (options.labelPosition != LabelPositions::None) {
