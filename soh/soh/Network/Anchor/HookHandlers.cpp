@@ -520,6 +520,26 @@ void Anchor::RegisterHooks() {
         }
     });
 
+    // Detect: web transitions from idle → burning (any player, any client).
+    // Broadcasts ROOM_EVENT("WEB_BURNED") so all other clients also burn their
+    // local copy immediately — independent of syncItemsAndFlags flag-sync.
+    COND_ID_HOOK(OnActorUpdate, ACTOR_BG_YDAN_SP, isConnected, [&](void* refActor) {
+        if (!IsSaveLoaded() || !gPlayState) return;
+        BgYdanSp* actor = static_cast<BgYdanSp*>(refActor);
+        const std::string key = GetActorKey((Actor*)actor, gPlayState->sceneNum);
+
+        static std::unordered_map<std::string, bool> lastWebIdleState;
+        const bool wasIdle = lastWebIdleState.count(key) ? lastWebIdleState[key] : true;
+        const bool isIdle  = (actor->actionFunc == BgYdanSp_FloorWebIdle ||
+                               actor->actionFunc == BgYdanSp_WallWebIdle);
+        lastWebIdleState[key] = isIdle;
+
+        if (wasIdle && !isIdle) {
+            // Web just started burning locally — notify all clients.
+            SendPacket_RoomEvent("WEB_BURNED", key, nlohmann::json{}, false);
+        }
+    });
+
     COND_ID_HOOK(ShouldActorUpdate, ACTOR_DOOR_SHUTTER, isConnected, [&](void* refActor, bool* should) {
         DoorShutter* actor = static_cast<DoorShutter*>(refActor);
 
@@ -1417,11 +1437,19 @@ void Anchor::RegisterHooks() {
                 lastDayTimeHost = gSaveContext.dayTime;
             }
 
-            // Do NOT broadcast time here every frame: syncing every ~1 s
-            // causes the drawbridge and day/night skeletons to jitter visibly
-            // for all clients.  A one-shot sync is sent by
-            // HandlePacket_RoomMasterAssign when a new client enters the room,
-            // which is the only moment accurate resync is needed.
+            // Broadcast TIME_SYNC whenever the freeze state changes (dungeon ↔
+            // overworld transition) and as a periodic safety-net every ~5 min.
+            // Per-frame broadcast is intentionally avoided (causes drawbridge jitter).
+            static bool  lastShouldFreeze   = false;
+            static u32   lastTimeSyncFrame  = 0;
+            const  u32   curFrame          = (u32)gPlayState->state.frames;
+            if ((shouldFreeze != lastShouldFreeze || (curFrame - lastTimeSyncFrame) >= 18000u)
+                && IsAnyClientInSameRoom()) {
+                SendPacket_TimeSync();
+                lastTimeSyncFrame = curFrame;
+            }
+            lastShouldFreeze = shouldFreeze;
+
         } else {
             // CLIENT -----------------------------------------------------
             // The host's TIME_SYNC packet sets remoteTimeFrozen and overwrites
@@ -1735,6 +1763,18 @@ void Anchor::RegisterHooks() {
                 std::string key = GetActorKey(actor, gPlayState->sceneNum);
                 auto it = bgActorKeyframeTarget.find(key);
                 if (it != bgActorKeyframeTarget.end()) {
+                    // Expire stale entries: when master stops sending keyframes
+                    // (actor was thrown / released), let local physics take over
+                    // so the throw arc plays correctly on non-master clients.
+                    if (it->second.lastReceivedAt != Clock::time_point{}) {
+                        auto msSince = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            Clock::now() - it->second.lastReceivedAt).count();
+                        if (msSince > 600) {
+                            bgActorKeyframeTarget.erase(it);
+                            actor = actor->next;
+                            continue;
+                        }
+                    }
                     const BgKeyframeTarget& target = it->second;
                     const bool responsivePuzzleLerp = IsLinkMovablePuzzleActor(actor);
                     const f32 lerpFraction = responsivePuzzleLerp ? 0.30f : BG_LERP_FRACTION;

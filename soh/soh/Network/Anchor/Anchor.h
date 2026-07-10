@@ -156,6 +156,10 @@ class Anchor : public Network {
     struct BgKeyframeTarget {
         Vec3f pos   = { 0, 0, 0 };
         s16   rotY  = 0;  // world.rot.y from the authority keyframe
+        // Wall-clock time of the last received keyframe.  Used to expire stale
+        // entries when the master stops broadcasting (e.g. after an actor is
+        // thrown/released) so local physics can take over.
+        Clock::time_point lastReceivedAt = {};
     };
     std::unordered_map<std::string, BgKeyframeTarget> bgActorKeyframeTarget;
 

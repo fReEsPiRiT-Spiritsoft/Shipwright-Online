@@ -84,6 +84,19 @@ void Anchor::HandlePacket_ActorKilled(nlohmann::json payload) {
                     actor->colChkInfo.health = 0;
                 }
                 Actor_Kill(actor);
+
+                // For boss actors: the game-native death sequence (which runs on the
+                // master) normally calls Flags_SetTempClear / Flags_SetClear for the
+                // room so that DoorWarp1_AwaitClearFlag (the blue exit portal) can
+                // advance.  On non-master clients Actor_Kill is called externally via
+                // this packet, so the boss never runs its own clear-flag code.
+                // Set both flags here to ensure the blue warp appears for everyone.
+                if (isEnemyKill && actor->category == ACTORCAT_BOSS && gPlayState) {
+                    const s32 bossRoom = (actor->room >= 0) ? actor->room
+                                                            : (s32)gPlayState->roomCtx.curRoom.num;
+                    Flags_SetTempClear(gPlayState, bossRoom);
+                    Flags_SetClear(gPlayState, bossRoom);
+                }
                 // Clean up client-side BG tracking entries for dead actors.
                 if (isBgKill) {
                     bgActorKeyframeTarget.erase(actorKey);

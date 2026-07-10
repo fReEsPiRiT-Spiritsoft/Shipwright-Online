@@ -9,6 +9,7 @@ extern "C" {
 #include "variables.h"
 #include "functions.h"
 #include "src/overlays/actors/ovl_En_Ru1/z_en_ru1.h"
+#include "src/overlays/actors/ovl_Bg_Ydan_Sp/z_bg_ydan_sp.h"
 extern PlayState* gPlayState;
 }
 
@@ -317,7 +318,25 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
             Flags_SetSwitch(gPlayState, switchFlag);
         }
 
-    } else if (eventType == "JABU_ACTOR_SPAWN") {
+    } else if (eventType == "WEB_BURNED") {
+        // One-shot: a player burned a Deku Tree spider web (BgYdanSp).
+        // The eventKey is the web's actorKey.  Find the web and burn it
+        // if it is still in idle state on this client.
+        // This event is sent via ROOM_EVENT so it works regardless of
+        // syncItemsAndFlags (switch-flag sync is gated behind that setting).
+        Actor* webActor = gPlayState->actorCtx.actorLists[ACTORCAT_BG].head;
+        while (webActor != nullptr) {
+            if (webActor->id == ACTOR_BG_YDAN_SP &&
+                GetActorKey(webActor, gPlayState->sceneNum) == eventKey) {
+                BgYdanSp* web = (BgYdanSp*)webActor;
+                if (web->actionFunc == BgYdanSp_FloorWebIdle ||
+                    web->actionFunc == BgYdanSp_WallWebIdle) {
+                    BgYdanSp_BurnWeb(web, gPlayState);
+                }
+                break;
+            }
+            webActor = webActor->next;
+        }
         // Room-master authoritative spawn relay for Jabu-specific scripted actors
         // that may not spawn reliably on non-masters due to local cutscene/script
         // divergence (Big Octo + electrified tentacles).

@@ -69,11 +69,25 @@ void Anchor::HandlePacket_BgKeyframeSync(nlohmann::json payload) {
 
     std::string actorKey = payload["actorKey"].get<std::string>();
 
+    // Skip if the LOCAL player is currently carrying this actor.
+    // The local carry physics must win over the remote keyframe to keep the
+    // item in the player's hands and allow a clean throw afterwards.
+    if (gPlayState) {
+        Player* player = GET_PLAYER(gPlayState);
+        if (player && (player->stateFlags1 & PLAYER_STATE1_CARRYING_ACTOR) &&
+            player->heldActor != nullptr) {
+            if (GetActorKey(player->heldActor, sceneNum) == actorKey) {
+                return;
+            }
+        }
+    }
+
     BgKeyframeTarget target;
     target.pos.x = payload.value("posX", 0.0f);
     target.pos.y = payload.value("posY", 0.0f);
     target.pos.z = payload.value("posZ", 0.0f);
     target.rotY  = (s16)payload.value("rotY", 0);
+    target.lastReceivedAt = std::chrono::steady_clock::now();
 
     // Store the target — the per-frame blend hook in HookHandlers.cpp will
     // smoothly approach the position using Math_ApproachF().
