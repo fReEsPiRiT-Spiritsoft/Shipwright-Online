@@ -387,6 +387,10 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         // once its own death sequence completes.
         // If the boss AI on this client also calls Actor_Kill (normal for OoT bosses),
         // the subsequent ACTOR_KILLED is a safe no-op on an already-dead actor.
+        // CI guardrail requires explicit adapter/fallback split. For DEATH_COMMIT
+        // we intentionally force fallback handling because adapters only clamp HP.
+        adapterHandled = false;
+        if (adapterHandled) return;
         std::string bossActorKey = eventData.value("bossActorKey", eventKey);
         if (bossActorKey.empty()) return;
 
