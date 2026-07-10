@@ -122,7 +122,8 @@ class BarinadeBossAdapter : public BossSyncAdapter {
     void Reset() override {
         gBarinadeTrack.clear();
     }
-(PlayState* play, Actor* actor) override {
+
+    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }

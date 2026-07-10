@@ -99,7 +99,8 @@ class GenericBossHealthPhaseAdapter : public BossSyncAdapter {
     void Reset() override {
         gBossTrack.clear();
     }
-(PlayState* play, Actor* actor) override {
+
+    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }

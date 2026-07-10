@@ -97,7 +97,8 @@ class BongoBongoAdapter : public BossSyncAdapter {
     void Reset() override {
         gBongoTrack.clear();
     }
-(PlayState* play, Actor* actor) override {
+
+    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }

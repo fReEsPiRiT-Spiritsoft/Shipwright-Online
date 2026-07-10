@@ -67,7 +67,8 @@ class Ganon2Adapter : public BossSyncAdapter {
     void Reset() override {
         gGanon2Track.clear();
     }
-(PlayState* play, Actor* actor) override {
+
+    nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
         if (play == nullptr || actor == nullptr) {
             return {};
         }
