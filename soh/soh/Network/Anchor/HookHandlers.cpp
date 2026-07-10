@@ -1052,18 +1052,21 @@ void Anchor::RegisterHooks() {
 
         // ── Draw-state sync: fire immediately when visibility toggles ────────
         // Covers Deku Scrubs emerging/hiding, any enemy that sets draw = NULL.
-        // actor->draw == nullptr is the standard "hidden" marker for many enemies.
-        // We track changes only so the first observation never fires spuriously.
-        bool currentDraw = (actor->draw != nullptr);
-        {
-            auto drawIt = trackedEnemyDrawState.find(key);
-            bool drawChanged = (drawIt != trackedEnemyDrawState.end())
-                               && (drawIt->second != currentDraw);
-            trackedEnemyDrawState[key] = currentDraw;
-            if (drawChanged) {
-                // Reuse the position packet — it now carries drawEnabled too.
-                SendPacket_EnemyPositionUpdate(actor);
-                trackedEnemyPos[key] = actor->world.pos; // suppress duplicate pos update
+        // Bosses must not use this network draw override, because a false hide
+        // state would make them invisible and untargetable for all clients.
+        const bool isBossActor = (actor->category == ACTORCAT_BOSS);
+        if (!isBossActor) {
+            bool currentDraw = (actor->draw != nullptr);
+            {
+                auto drawIt = trackedEnemyDrawState.find(key);
+                bool drawChanged = (drawIt != trackedEnemyDrawState.end())
+                                   && (drawIt->second != currentDraw);
+                trackedEnemyDrawState[key] = currentDraw;
+                if (drawChanged) {
+                    // Reuse the position packet — it now carries drawEnabled too.
+                    SendPacket_EnemyPositionUpdate(actor);
+                    trackedEnemyPos[key] = actor->world.pos; // suppress duplicate pos update
+                }
             }
         }
 

@@ -142,18 +142,22 @@ void Anchor::HandlePacket_EnemyPositionUpdate(nlohmann::json payload) {
                 // When the room master hides an enemy (e.g. Deku Scrub going underground),
                 // suppress rendering on the client by nulling the draw pointer.
                 // Restore the saved function when the enemy reappears.
-                if (!drawEnabled) {
-                    // Save original draw function before we hide it (once only).
-                    if (actor->draw != nullptr) {
-                        savedEnemyDrawFuncs[actorKey] = actor->draw;
-                        actor->draw = nullptr;
-                    }
-                } else {
-                    // Restore draw function if we previously suppressed it.
-                    auto savedIt = savedEnemyDrawFuncs.find(actorKey);
-                    if (savedIt != savedEnemyDrawFuncs.end()) {
-                        actor->draw = savedIt->second;
-                        savedEnemyDrawFuncs.erase(savedIt);
+                // Bosses never use this override: a false hide state would make the
+                // boss invisible and untargetable for the whole room.
+                if (actor->category != ACTORCAT_BOSS) {
+                    if (!drawEnabled) {
+                        // Save original draw function before we hide it (once only).
+                        if (actor->draw != nullptr) {
+                            savedEnemyDrawFuncs[actorKey] = actor->draw;
+                            actor->draw = nullptr;
+                        }
+                    } else {
+                        // Restore draw function if we previously suppressed it.
+                        auto savedIt = savedEnemyDrawFuncs.find(actorKey);
+                        if (savedIt != savedEnemyDrawFuncs.end()) {
+                            actor->draw = savedIt->second;
+                            savedEnemyDrawFuncs.erase(savedIt);
+                        }
                     }
                 }
 

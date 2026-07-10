@@ -47,6 +47,22 @@ static DamageTable DummyPlayerDamageTable = {
     /* Unknown 2     */ DMG_ENTRY(0, PLAYER_HIT_RESPONSE_NONE),
 };
 
+// Minimal update stub for phantom Epona actors.
+// Advances ONLY the Skin skelAnime so bone matrices stay valid — the Skin draw
+// function calls Skin_GetOrientations which reads these matrices, and leaving
+// them stale causes Skin_UpdateVertices to SIGSEGV after ~30 s.
+//
+// Intentionally does NOT run the full EnHorse_Update logic so the phantom:
+//   - Never reads DREG(53) (Epona song signal → would "activate" the phantom,
+//     steal the song response, and prevent the client from calling their own Epona)
+//   - Never calls EnHorse_MountDismount (would let local Link mount the phantom)
+//   - Never responds to player proximity or aggro
+//   - Never modifies world position (position is driven by DummyPlayer_Update)
+static void PhantomEpona_Update(Actor* thisx, PlayState* play) {
+    EnHorse* horse = (EnHorse*)thisx;
+    SkelAnime_Update(&horse->skin.skelAnime);
+}
+
 void DummyPlayer_Init(Actor* actor, PlayState* play) {
     Player* player = (Player*)actor;
 

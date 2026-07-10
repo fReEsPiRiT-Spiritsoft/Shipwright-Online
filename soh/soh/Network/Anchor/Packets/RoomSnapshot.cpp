@@ -378,16 +378,20 @@ void Anchor::HandlePacket_RoomSnapshot(nlohmann::json payload) {
                         // hidden enemies (e.g. Deku Scrubs underground).
                         // Save the original draw function so it can be restored
                         // by EnemyPositionUpdate when the enemy reappears.
-                        if (!drawEnabled) {
-                            if (actor->draw != nullptr) {
-                                savedEnemyDrawFuncs[key] = actor->draw;
-                                actor->draw = nullptr;
-                            }
-                        } else {
-                            auto savedIt = savedEnemyDrawFuncs.find(key);
-                            if (savedIt != savedEnemyDrawFuncs.end()) {
-                                actor->draw = savedIt->second;
-                                savedEnemyDrawFuncs.erase(savedIt);
+                        // Bosses never use this override, because a false hide state
+                        // would make them disappear from the room for everyone.
+                        if (actor->category != ACTORCAT_BOSS) {
+                            if (!drawEnabled) {
+                                if (actor->draw != nullptr) {
+                                    savedEnemyDrawFuncs[key] = actor->draw;
+                                    actor->draw = nullptr;
+                                }
+                            } else {
+                                auto savedIt = savedEnemyDrawFuncs.find(key);
+                                if (savedIt != savedEnemyDrawFuncs.end()) {
+                                    actor->draw = savedIt->second;
+                                    savedEnemyDrawFuncs.erase(savedIt);
+                                }
                             }
                         }
 
