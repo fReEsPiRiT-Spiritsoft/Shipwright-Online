@@ -73,7 +73,7 @@ void Anchor::HandlePacket_BgKeyframeSync(nlohmann::json payload) {
     // The local carry physics must win over the remote keyframe to keep the
     // item in the player's hands and allow a clean throw afterwards.
     if (gPlayState) {
-        Player* player = GET_PLAYER(gPlayState);
+        Player* player = (Player*)gPlayState->actorCtx.actorLists[ACTORCAT_PLAYER].head;
         if (player && (player->stateFlags1 & PLAYER_STATE1_CARRYING_ACTOR) &&
             player->heldActor != nullptr) {
             if (GetActorKey(player->heldActor, sceneNum) == actorKey) {
