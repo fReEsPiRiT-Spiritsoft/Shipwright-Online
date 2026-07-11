@@ -523,7 +523,7 @@ void Anchor::RegisterHooks() {
     // Detect: web transitions from idle → burning (any player, any client).
     // Broadcasts ROOM_EVENT("WEB_BURNED") so all other clients also burn their
     // local copy immediately — independent of syncItemsAndFlags flag-sync.
-    COND_ID_HOOK(OnActorUpdate, ACTOR_BG_YDAN_SP, isConnected, [&](void* refActor) {
+    COND_ID_HOOK(OnActorUpdate, ACTOR_BG_YDAN_SP, isConnected, ([&](void* refActor) {
         if (!IsSaveLoaded() || !gPlayState) return;
         BgYdanSp* actor = static_cast<BgYdanSp*>(refActor);
         const std::string key = GetActorKey((Actor*)actor, gPlayState->sceneNum);
@@ -538,7 +538,7 @@ void Anchor::RegisterHooks() {
             // Web just started burning locally — notify all clients.
             SendPacket_RoomEvent("WEB_BURNED", key, nlohmann::json{}, false);
         }
-    });
+    }));
 
     COND_ID_HOOK(ShouldActorUpdate, ACTOR_DOOR_SHUTTER, isConnected, [&](void* refActor, bool* should) {
         DoorShutter* actor = static_cast<DoorShutter*>(refActor);
