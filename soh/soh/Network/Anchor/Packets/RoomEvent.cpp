@@ -320,18 +320,20 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
 
     } else if (eventType == "WEB_BURNED") {
         // One-shot: a player burned a Deku Tree spider web (BgYdanSp).
-        // The eventKey is the web's actorKey.  Find the web and burn it
-        // if it is still in idle state on this client.
-        // This event is sent via ROOM_EVENT so it works regardless of
-        // syncItemsAndFlags (switch-flag sync is gated behind that setting).
+        // The eventKey is the web's actorKey.  Find the web and set its
+        // destroyed switch flag.  HookHandlers already applies
+        // BgYdanSp_BurnWeb(...) when this switch is set, so we avoid directly
+        // calling non-exported actor internals from this packet layer.
+        // This works regardless of syncItemsAndFlags.
         Actor* webActor = gPlayState->actorCtx.actorLists[ACTORCAT_BG].head;
         while (webActor != nullptr) {
             if (webActor->id == ACTOR_BG_YDAN_SP &&
                 GetActorKey(webActor, gPlayState->sceneNum) == eventKey) {
                 BgYdanSp* web = (BgYdanSp*)webActor;
-                if (web->actionFunc == BgYdanSp_FloorWebIdle ||
-                    web->actionFunc == BgYdanSp_WallWebIdle) {
-                    BgYdanSp_BurnWeb(web, gPlayState);
+                const s16 switchFlag = web->isDestroyedSwitchFlag;
+                if (switchFlag >= 0 && switchFlag <= 0x3F &&
+                    !Flags_GetSwitch(gPlayState, switchFlag)) {
+                    Flags_SetSwitch(gPlayState, switchFlag);
                 }
                 break;
             }
