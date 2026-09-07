@@ -1,4 +1,16 @@
-> 🇩🇪 [Deutsche Version / German version](README_DE.md)
+
+🇩🇪 [Deutsche Version / German version](README_DE.md)
+
+---
+
+## Ship of Harkinian — This Fork: Voll synchronisierte Co‑op / MMO‑Erfahrung
+
+Dies ist ein Fork des Projekts "Ship of Harkinian" mit dem Ziel, eine Host‑Authority Server/Client‑Architektur zu implementieren, die Gegner-, Welt‑ und Boss‑Zustände vollständig synchronisiert, sodass sich das Spiel wie eine moderne MMO/Co‑op‑Erfahrung anfühlt.
+
+- Hinweis auf das Original: Das Originalprojekt findest du unter https://github.com/HarbourMasters/Shipwright — dieser Fork baut darauf auf und erweitert es um umfangreiche Netzwerk‑Synchronisationen.
+- Was dieser Fork bietet: Host‑Authority Enemy Sync, Client→Host Schadensermittlung, dynamisches Aggro‑Spoofing, Raum‑Events, Zeit‑Sync und viele weitere Mechaniken, die Mehrspieler‑Koop stabil und deterministisch machen.
+
+---
 
 <a href="features.md">
   <img src="https://img.shields.io/badge/Alle%20Features-features.md-orange?style=for-the-badge&logo=readme" alt="Alle Features">
