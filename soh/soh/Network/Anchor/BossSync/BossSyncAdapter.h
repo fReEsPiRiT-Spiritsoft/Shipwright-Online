@@ -31,6 +31,22 @@ inline bool IsPlaySessionActive(PlayState* play) {
   return true;
 }
 
+// Several OoT bosses subtract damage from colChkInfo.health directly (bypassing
+// the engine-safe Actor_ApplyDamage clamp helper) and detect death via a SIGNED
+// (s8) <= 0 comparison without ever re-clamping the field back to 0. A lethal
+// hit can overshoot past exactly zero and wrap to a large unsigned value
+// (e.g. 251), which a naive `uint8_t hp = actor->colChkInfo.health;` read would
+// interpret as "nearly full health" instead of "dead". Confirmed affected:
+// Gohma, Ganondorf, Phantom Ganon, Morpha. Reading through this helper makes
+// every adapter immune regardless of which specific boss it targets.
+inline uint8_t ReadClampedBossHealth(const Actor* actor) {
+  if (actor == nullptr) {
+    return 0;
+  }
+  const int8_t signedHealth = (int8_t)actor->colChkInfo.health;
+  return (signedHealth <= 0) ? 0 : (uint8_t)signedHealth;
+}
+
 // Adapter interface for a single boss/miniboss state machine.
 // Implementations convert local actor transitions to canonical BOSS_* events
 // and apply remote events/snapshots back into local actor state.

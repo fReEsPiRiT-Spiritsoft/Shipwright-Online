@@ -155,7 +155,7 @@ class BarinadeBossAdapter : public BossSyncAdapter {
 
         QueueSubactorKillEvents(track, currentSupports, currentZappers, bodyKey, actor, play);
 
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
         const int phaseNow = ComputePhase(hp, currentSupports.size(), currentZappers.size());
 
         if (!track.initialized) {
@@ -330,7 +330,7 @@ class BarinadeBossAdapter : public BossSyncAdapter {
             node = node->next;
         }
 
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
 
         nlohmann::json snap;
         snap["bossActorKey"] = bodyKey;

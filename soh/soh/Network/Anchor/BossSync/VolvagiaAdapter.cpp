@@ -46,6 +46,39 @@ struct VolvagiaTrackState {
 
 std::unordered_map<std::string, VolvagiaTrackState> gVolvagiaTrack;
 
+// BossFd's real action-state (BOSSFD_FLY_MAIN/FLY_HOLE/BURROW/EMERGE/...) lives
+// in work[BFD_ACTION_STATE] (s16 array, index 0), not actor->params — params is
+// just a spawn/identity value. holeIndex and targetPosition decide which hole
+// the dragon flies to; without forcing these too, each client's local RNG
+// picks a different hole. Offsets from z_boss_fd.h (BossFd struct).
+constexpr size_t kBfdActionStateOffset = 0x0222; // work[BFD_ACTION_STATE]
+constexpr size_t kBfdTargetPosOffset   = 0x02BC; // Vec3f targetPosition
+constexpr size_t kBfdHoleIndexOffset   = 0x02D4; // u8 holeIndex
+
+int16_t ReadBfdActionState(const Actor* actor) {
+    return *(const int16_t*)((const char*)actor + kBfdActionStateOffset);
+}
+
+void WriteBfdActionState(Actor* actor, int16_t value) {
+    *(int16_t*)((char*)actor + kBfdActionStateOffset) = value;
+}
+
+u8 ReadBfdHoleIndex(const Actor* actor) {
+    return *(const u8*)((const char*)actor + kBfdHoleIndexOffset);
+}
+
+void WriteBfdHoleIndex(Actor* actor, u8 value) {
+    *(u8*)((char*)actor + kBfdHoleIndexOffset) = value;
+}
+
+Vec3f ReadBfdTargetPosition(const Actor* actor) {
+    return *(const Vec3f*)((const char*)actor + kBfdTargetPosOffset);
+}
+
+void WriteBfdTargetPosition(Actor* actor, const Vec3f& value) {
+    *(Vec3f*)((char*)actor + kBfdTargetPosOffset) = value;
+}
+
 std::string BuildActorKeyLocal(const Actor* actor, s16 sceneNum) {
     char buf[128];
     snprintf(buf, sizeof(buf), "%d_%d_%d_%d_%d_%d_%d_%d_%d_%d_%d",
@@ -112,8 +145,8 @@ class VolvagiaAdapter : public BossSyncAdapter {
         VolvagiaTrackState& track = gVolvagiaTrack[primaryKey];
 
         bool isHole = (actor->id == ACTOR_BOSS_FD2);
-        const uint8_t hp = actor->colChkInfo.health;
-        const int stateId = (int)actor->params;
+        const uint8_t hp = ReadClampedBossHealth(actor);
+        const int stateId = (actor->id == ACTOR_BOSS_FD) ? (int)ReadBfdActionState(actor) : (int)actor->params;
         const int phaseNow = ComputePhaseFromVolvagiaState(stateId, isHole);
 
         bool arenaCollapsed = false;
@@ -125,6 +158,30 @@ class VolvagiaAdapter : public BossSyncAdapter {
                 }
             }
             node = node->next;
+        }
+
+        // Attack/hole-selection sync: captured BEFORE the early-return branches
+        // below (which already advance lastStateId for their own bookkeeping),
+        // so a hole change that lands on the same frame as an HP/phase/death
+        // transition is queued instead of silently dropped.
+        if (track.initialized && actor->id == ACTOR_BOSS_FD && stateId != track.lastStateId) {
+            const u8 holeIndex = ReadBfdHoleIndex(actor);
+            const Vec3f targetPos = ReadBfdTargetPosition(actor);
+
+            nlohmann::json actionEvent;
+            actionEvent["eventType"] = "BOSS_ACTION_STATE";
+            actionEvent["eventKey"] = primaryKey;
+            actionEvent["bossActorKey"] = primaryKey;
+            actionEvent["bossActorId"] = (int)ACTOR_BOSS_FD;
+            actionEvent["actionState"] = stateId;
+            actionEvent["holeIndex"] = (int)holeIndex;
+            actionEvent["targetX"] = targetPos.x;
+            actionEvent["targetY"] = targetPos.y;
+            actionEvent["targetZ"] = targetPos.z;
+            actionEvent["seq"] = (uint32_t)play->state.frames;
+            actionEvent["masterFrame"] = (uint32_t)play->state.frames;
+            actionEvent["lateJoinCanSkipIntro"] = true;
+            track.pendingEvents.push_back(actionEvent);
         }
 
         if (!track.initialized) {
@@ -243,6 +300,9 @@ class VolvagiaAdapter : public BossSyncAdapter {
 
         track.lastArenaCollapsed = arenaCollapsed;
         track.lastIsHole = isHole;
+        // Always advance, even when no other branch fired this frame — otherwise
+        // the action-state detector above would re-queue duplicate events forever.
+        track.lastStateId = stateId;
 
         if (!track.pendingEvents.empty()) {
             nlohmann::json next = track.pendingEvents.front();
@@ -282,6 +342,32 @@ class VolvagiaAdapter : public BossSyncAdapter {
                     Actor_SetColorFilter(volvagia, 0x4000, 0xFF, 0, 8);
                 }
             }
+        } else if (eventType == "BOSS_ACTION_STATE") {
+            Actor* volvagia = nullptr;
+            Actor* actor = play->actorCtx.actorLists[ACTORCAT_BOSS].head;
+            while (actor != nullptr) {
+                if (actor->id == ACTOR_BOSS_FD && BuildActorKeyLocal(actor, play->sceneNum) == bossActorKey) {
+                    volvagia = actor;
+                    break;
+                }
+                actor = actor->next;
+            }
+            if (!volvagia || volvagia->update == nullptr) return;
+
+            const int16_t actionState = (int16_t)payload.value("actionState", (int)0);
+            const u8 holeIndex = (u8)payload.value("holeIndex", (int)0);
+            const Vec3f targetPos = {
+                payload.value("targetX", volvagia->world.pos.x),
+                payload.value("targetY", volvagia->world.pos.y),
+                payload.value("targetZ", volvagia->world.pos.z),
+            };
+
+            // Force the SAME decision the master already made — the dragon's own
+            // actionFunc keeps running locally and will act on these corrected
+            // fields on its very next tick, no actionFunc swap required.
+            WriteBfdActionState(volvagia, actionState);
+            WriteBfdHoleIndex(volvagia, holeIndex);
+            WriteBfdTargetPosition(volvagia, targetPos);
         }
     }
 
@@ -310,8 +396,8 @@ class VolvagiaAdapter : public BossSyncAdapter {
             node = node->next;
         }
 
-        const uint8_t hp = actor->colChkInfo.health;
-        const int stateId = (int)actor->params;
+        const uint8_t hp = ReadClampedBossHealth(actor);
+        const int stateId = (actor->id == ACTOR_BOSS_FD) ? (int)ReadBfdActionState(actor) : (int)actor->params;
         const int phaseNow = ComputePhaseFromVolvagiaState(stateId, isHole);
 
         nlohmann::json snap;
@@ -350,6 +436,13 @@ class VolvagiaAdapter : public BossSyncAdapter {
         if (!volvagia || !volvagia->update) return;
 
         volvagia->colChkInfo.health = hp;
+
+        // Restore the exact action-state/hole/target so a late joiner sees the
+        // dragon already committed to the same attack, not a fresh ROM default.
+        if (volvagia->id == ACTOR_BOSS_FD) {
+            const int16_t actionState = (int16_t)snapshot.value("stateId", (int)0);
+            WriteBfdActionState(volvagia, actionState);
+        }
     }
 };
 

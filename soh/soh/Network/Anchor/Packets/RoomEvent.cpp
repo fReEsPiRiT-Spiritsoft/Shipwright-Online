@@ -449,9 +449,11 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
                eventType == "BOSS_WEAKPOINT_HIT" ||
                eventType == "BOSS_WEAKPOINT_DESTROY" ||
                eventType == "BOSS_SUBACTOR_SPAWN" ||
-               eventType == "BOSS_INVULN_SET") {
+               eventType == "BOSS_INVULN_SET" ||
+               eventType == "BOSS_ACTION_STATE") {
         // Infrastructure-only phase: state is already cached above in
         // bossSnapshotStateByKey. Concrete boss adapters are added incrementally.
+        // BOSS_ACTION_STATE is fully handled by the adapter's ApplyEvent above.
         return;
 
     } else if (eventType == "BOSS_CUTSCENE_GATE") {

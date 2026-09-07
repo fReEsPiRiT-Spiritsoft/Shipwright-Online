@@ -8,18 +8,25 @@ extern "C" {
 #include "functions.h"
 }
 
+// King Dodongo (BossDodongo) does NOT use actor.colChkInfo.health for combat.
+// It keeps a dedicated `health` field (s16, struct offset 0x0194) and detects
+// death via `this->health <= 0` — the shared GenericBossHealthPhaseAdapter
+// reads colChkInfo.health, which King Dodongo never changes, so HP/phase/
+// death sync was completely inert for this boss. See z_boss_dodongo.h/.c.
 namespace AnchorBossSync {
 
 namespace {
 
-struct BigOctoTrackState {
+constexpr size_t kHealthFieldOffset = 0x0194;
+
+struct DodongoTrackState {
     bool initialized = false;
-    uint8_t initialHp = 1;
-    uint8_t lastHp = 1;
+    int16_t initialHp = 1;
+    int16_t lastHp = 1;
     int lastPhaseId = -1;
 };
 
-std::unordered_map<std::string, BigOctoTrackState> gBigOctoTrack;
+std::unordered_map<std::string, DodongoTrackState> gDodongoTrack;
 
 std::string BuildActorKeyLocal(const Actor* actor, s16 sceneNum) {
     char buf[128];
@@ -38,29 +45,43 @@ std::string BuildActorKeyLocal(const Actor* actor, s16 sceneNum) {
     return std::string(buf);
 }
 
-int ComputePhaseByHp(uint8_t hp, uint8_t initialHp) {
+// Reads/writes the boss-local `health` field directly, clamped to >= 0 since
+// the game itself allows it to go negative before checking `<= 0` for death.
+int16_t ReadDodongoHealth(const Actor* actor) {
+    const char* actorPtr = (const char*)actor;
+    const int16_t raw = *(const int16_t*)(actorPtr + kHealthFieldOffset);
+    return (raw < 0) ? 0 : raw;
+}
+
+void WriteDodongoHealth(Actor* actor, int16_t value) {
+    char* actorPtr = (char*)actor;
+    *(int16_t*)(actorPtr + kHealthFieldOffset) = (value < 0) ? 0 : value;
+}
+
+int ComputePhaseByHp(int16_t hp, int16_t initialHp) {
     if (initialHp <= 1) {
-        return hp == 0 ? 2 : 0;
+        return hp <= 0 ? 3 : 0;
     }
 
-    float ratio = (float)hp / (float)std::max<uint8_t>(initialHp, 1);
-    if (hp == 0) return 2;
-    if (ratio <= 0.4f) return 1;
+    float ratio = (float)hp / (float)std::max<int16_t>(initialHp, 1);
+    if (hp <= 0) return 3;
+    if (ratio <= 0.33f) return 2;
+    if (ratio <= 0.66f) return 1;
     return 0;
 }
 
-class BigOctoMinibossAdapter : public BossSyncAdapter {
+class KingDodongoAdapter : public BossSyncAdapter {
   public:
     bool CanHandle(s16 sceneNum, s16 actorId) const override {
-        return sceneNum == SCENE_JABU_JABU && actorId == ACTOR_EN_BIGOKUTA;
+        return sceneNum == SCENE_DODONGOS_CAVERN_BOSS && actorId == ACTOR_BOSS_DODONGO;
     }
 
     const char* Name() const override {
-        return "BigOctoMinibossAdapter";
+        return "KingDodongoAdapter";
     }
 
     void Reset() override {
-        gBigOctoTrack.clear();
+        gDodongoTrack.clear();
     }
 
     nlohmann::json CaptureTransition(PlayState* play, Actor* actor) override {
@@ -68,48 +89,45 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
             return {};
         }
 
-        const std::string actorKey = BuildActorKeyLocal(actor, play->sceneNum);
-        BigOctoTrackState& track = gBigOctoTrack[actorKey];
+        const std::string bossActorKey = BuildActorKeyLocal(actor, play->sceneNum);
+        DodongoTrackState& track = gDodongoTrack[bossActorKey];
 
-        const uint8_t hp = ReadClampedBossHealth(actor);
+        const int16_t hp = ReadDodongoHealth(actor);
         if (!track.initialized) {
             track.initialized = true;
-            track.initialHp = std::max<uint8_t>(hp, 1);
+            track.initialHp = std::max<int16_t>(hp, 1);
             track.lastHp = hp;
             track.lastPhaseId = ComputePhaseByHp(hp, track.initialHp);
 
             nlohmann::json event;
             event["eventType"] = "BOSS_STAGE_ENTER";
-            event["eventKey"] = actorKey;
-            event["bossActorKey"] = actorKey;
+            event["eventKey"] = bossActorKey;
+            event["bossActorKey"] = bossActorKey;
             event["bossActorId"] = (int)actor->id;
             event["phaseId"] = track.lastPhaseId;
             event["hp"] = (int)hp;
-            event["isMiniBoss"] = true;
             event["seq"] = (uint32_t)play->state.frames;
             event["masterFrame"] = (uint32_t)play->state.frames;
-            event["lateJoinCanSkipIntro"] = false;
+            event["lateJoinCanSkipIntro"] = true;
             return event;
         }
 
         const int phaseNow = ComputePhaseByHp(hp, track.initialHp);
 
-        if (hp == 0 && track.lastHp != 0) {
+        if (hp <= 0 && track.lastHp > 0) {
             track.lastHp = hp;
             track.lastPhaseId = phaseNow;
 
             nlohmann::json event;
-            event["eventType"] = "BOSS_SUBACTOR_KILL";
-            event["eventKey"] = actorKey;
-            event["targetActorKey"] = actorKey;
-            event["bossActorKey"] = actorKey;
+            event["eventType"] = "BOSS_DEATH_COMMIT";
+            event["eventKey"] = bossActorKey;
+            event["bossActorKey"] = bossActorKey;
             event["bossActorId"] = (int)actor->id;
             event["phaseId"] = phaseNow;
             event["hp"] = 0;
-            event["isMiniBoss"] = true;
             event["seq"] = (uint32_t)play->state.frames;
             event["masterFrame"] = (uint32_t)play->state.frames;
-            event["lateJoinCanSkipIntro"] = false;
+            event["lateJoinCanSkipIntro"] = true;
             return event;
         }
 
@@ -119,34 +137,32 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
 
             nlohmann::json event;
             event["eventType"] = "BOSS_STAGE_ENTER";
-            event["eventKey"] = actorKey;
-            event["bossActorKey"] = actorKey;
+            event["eventKey"] = bossActorKey;
+            event["bossActorKey"] = bossActorKey;
             event["bossActorId"] = (int)actor->id;
             event["phaseId"] = phaseNow;
             event["hp"] = (int)hp;
-            event["isMiniBoss"] = true;
             event["seq"] = (uint32_t)play->state.frames;
             event["masterFrame"] = (uint32_t)play->state.frames;
-            event["lateJoinCanSkipIntro"] = false;
+            event["lateJoinCanSkipIntro"] = true;
             return event;
         }
 
         if (hp < track.lastHp) {
-            const uint8_t oldHp = track.lastHp;
+            const int16_t oldHp = track.lastHp;
             track.lastHp = hp;
 
             nlohmann::json event;
             event["eventType"] = "BOSS_WEAKPOINT_HIT";
-            event["eventKey"] = actorKey;
-            event["bossActorKey"] = actorKey;
+            event["eventKey"] = bossActorKey;
+            event["bossActorKey"] = bossActorKey;
             event["bossActorId"] = (int)actor->id;
             event["phaseId"] = phaseNow;
             event["hp"] = (int)hp;
             event["damage"] = (int)(oldHp - hp);
-            event["isMiniBoss"] = true;
             event["seq"] = (uint32_t)play->state.frames;
             event["masterFrame"] = (uint32_t)play->state.frames;
-            event["lateJoinCanSkipIntro"] = false;
+            event["lateJoinCanSkipIntro"] = true;
             return event;
         }
 
@@ -160,38 +176,35 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
     void ApplyEvent(PlayState* play, const nlohmann::json& payload) override {
         if (!IsPlaySessionActive(play)) return;
 
-        const std::string eventType = payload.value("eventType", std::string(""));
+        const std::string eventType    = payload.value("eventType", std::string(""));
         const std::string bossActorKey = payload.value("bossActorKey", std::string(""));
-        const std::string targetActorKey = payload.value("targetActorKey", std::string(""));
+        const int16_t     hp           = (int16_t)payload.value("hp", 1);
+        const s16         bossActorId  = (s16)payload.value("bossActorId", (int)-1);
+        if (bossActorKey.empty() || bossActorId < 0) return;
 
-        Actor* bigocto = nullptr;
+        Actor* boss = nullptr;
         for (int cat : { ACTORCAT_BOSS, ACTORCAT_ENEMY }) {
             Actor* actor = play->actorCtx.actorLists[cat].head;
             while (actor != nullptr) {
-                if (BuildActorKeyLocal(actor, play->sceneNum) == bossActorKey && actor->id == ACTOR_EN_BIGOKUTA) {
-                    bigocto = actor;
+                if (actor->id == bossActorId &&
+                    BuildActorKeyLocal(actor, play->sceneNum) == bossActorKey) {
+                    boss = actor;
                     break;
                 }
                 actor = actor->next;
             }
-            if (bigocto) break;
+            if (boss) break;
         }
-        if (!bigocto) return;
+        if (!boss || !boss->update) return;
 
-        if (!bigocto->update) return;
-        if (eventType == "BOSS_WEAKPOINT_HIT") {
-            const uint8_t newHp = (uint8_t)payload.value("hp", 0);
-            if (newHp < bigocto->colChkInfo.health || newHp == 0) {
-                bigocto->colChkInfo.health = newHp;
-                Actor_SetColorFilter(bigocto, 0x4000, 0xFF, 0, 8);
+        if (eventType == "BOSS_WEAKPOINT_HIT" || eventType == "BOSS_STAGE_ENTER") {
+            // Only apply downward HP changes — stale events must never heal the boss.
+            if (hp < ReadDodongoHealth(boss) || hp <= 0) {
+                WriteDodongoHealth(boss, hp);
             }
-        } else if (eventType == "BOSS_STAGE_ENTER") {
-            const uint8_t newHp = (uint8_t)payload.value("hp", 0);
-            if (newHp < bigocto->colChkInfo.health || newHp == 0) {
-                bigocto->colChkInfo.health = newHp;
+            if (eventType == "BOSS_WEAKPOINT_HIT") {
+                Actor_SetColorFilter(boss, 0x4000, 0xFF, 0, 8);
             }
-        } else if (eventType == "BOSS_SUBACTOR_KILL") {
-            bigocto->colChkInfo.health = 0;
         }
     }
 
@@ -200,18 +213,17 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
             return {};
         }
 
-        const std::string actorKey = BuildActorKeyLocal(actor, play->sceneNum);
-        const uint8_t hp = actor->colChkInfo.health;
+        const std::string bossActorKey = BuildActorKeyLocal(actor, play->sceneNum);
+        const int16_t hp = ReadDodongoHealth(actor);
 
         nlohmann::json snap;
-        snap["bossActorKey"] = actorKey;
+        snap["bossActorKey"] = bossActorKey;
         snap["bossActorId"] = (int)actor->id;
         snap["sceneNum"] = play->sceneNum;
         snap["roomNum"] = (int)play->roomCtx.curRoom.num;
-        snap["phaseId"] = ComputePhaseByHp(hp, gBigOctoTrack.count(actorKey) ? gBigOctoTrack[actorKey].initialHp : std::max<uint8_t>(hp, 1));
+        snap["phaseId"] = ComputePhaseByHp(hp, gDodongoTrack.count(bossActorKey) ? gDodongoTrack[bossActorKey].initialHp : std::max<int16_t>(hp, 1));
         snap["hp"] = (int)hp;
-        snap["isMiniBoss"] = true;
-        snap["lateJoinCanSkipIntro"] = false;
+        snap["lateJoinCanSkipIntro"] = true;
         return snap;
     }
 
@@ -219,30 +231,31 @@ class BigOctoMinibossAdapter : public BossSyncAdapter {
         if (!IsPlaySessionActive(play)) return;
 
         const std::string bossActorKey = snapshot.value("bossActorKey", std::string(""));
-        const uint8_t hp = (uint8_t)snapshot.value("hp", 1);
+        const s16         bossActorId  = (s16)snapshot.value("bossActorId", (int)-1);
+        const int16_t     hp           = (int16_t)snapshot.value("hp", 1);
+        if (bossActorKey.empty() || bossActorId < 0) return;
 
-        Actor* bigocto = nullptr;
         for (int cat : { ACTORCAT_BOSS, ACTORCAT_ENEMY }) {
             Actor* actor = play->actorCtx.actorLists[cat].head;
             while (actor != nullptr) {
-                if (BuildActorKeyLocal(actor, play->sceneNum) == bossActorKey && actor->id == ACTOR_EN_BIGOKUTA) {
-                    bigocto = actor;
-                    break;
+                if (actor->id == bossActorId &&
+                    BuildActorKeyLocal(actor, play->sceneNum) == bossActorKey &&
+                    actor->update != nullptr) {
+                    // Snapshot sets absolute HP — this is the authoritative initial state
+                    // for the late joiner, so we apply regardless of direction.
+                    WriteDodongoHealth(actor, hp);
+                    return;
                 }
                 actor = actor->next;
             }
-            if (bigocto) break;
         }
-        if (!bigocto || !bigocto->update) return;
-
-        bigocto->colChkInfo.health = hp;
     }
 };
 
 } // namespace
 
-std::shared_ptr<BossSyncAdapter> CreateBigOctoMinibossAdapter() {
-    return std::make_shared<BigOctoMinibossAdapter>();
+std::shared_ptr<BossSyncAdapter> CreateKingDodongoAdapter() {
+    return std::make_shared<KingDodongoAdapter>();
 }
 
 } // namespace AnchorBossSync

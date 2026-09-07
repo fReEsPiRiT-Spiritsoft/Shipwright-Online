@@ -9,6 +9,7 @@ std::shared_ptr<BossSyncAdapter> CreateBongoBongoAdapter();
 std::shared_ptr<BossSyncAdapter> CreateVolvagiaAdapter();
 std::shared_ptr<BossSyncAdapter> CreateTwinrovaAdapter();
 std::shared_ptr<BossSyncAdapter> CreateGanon2Adapter();
+std::shared_ptr<BossSyncAdapter> CreateKingDodongoAdapter();
 std::shared_ptr<BossSyncAdapter> CreateGenericBossHealthPhaseAdapter();
 std::shared_ptr<BossSyncAdapter> CreateBigOctoMinibossAdapter();
 
@@ -27,6 +28,7 @@ void RegisterDefaultBossSyncAdapters() {
         gBossSyncAdapters.push_back(CreateVolvagiaAdapter());
         gBossSyncAdapters.push_back(CreateTwinrovaAdapter());
         gBossSyncAdapters.push_back(CreateGanon2Adapter());
+        gBossSyncAdapters.push_back(CreateKingDodongoAdapter());
         gBossSyncAdapters.push_back(CreateBigOctoMinibossAdapter());
         gBossSyncAdapters.push_back(CreateGenericBossHealthPhaseAdapter());
     });

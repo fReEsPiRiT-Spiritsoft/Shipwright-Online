@@ -139,7 +139,7 @@ class BongoBongoAdapter : public BossSyncAdapter {
 
         QueueHandLossEvents(track, currentHands, headKey, actor, play);
 
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
         const int phaseNow = ComputePhaseFromHandState(handsAlive, (int)hp);
 
         if (!track.initialized) {
@@ -331,7 +331,7 @@ class BongoBongoAdapter : public BossSyncAdapter {
             node = node->next;
         }
 
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
 
         nlohmann::json snap;
         snap["bossActorKey"] = headKey;

@@ -88,7 +88,7 @@ class TwinrovaAdapter : public BossSyncAdapter {
         const std::string twinrovaKey = BuildActorKeyLocal(actor, play->sceneNum);
         TwinrovaTrackState& track = gTwinrovaTrack[twinrovaKey];
 
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
         const int formId = (int)actor->params;
         const int phaseNow = ComputePhaseFromTwinrovaForm(formId);
 

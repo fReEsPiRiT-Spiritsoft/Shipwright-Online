@@ -108,7 +108,7 @@ class GenericBossHealthPhaseAdapter : public BossSyncAdapter {
         const std::string bossActorKey = BuildActorKeyLocal(actor, play->sceneNum);
         BossTrackState& track = gBossTrack[bossActorKey];
 
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
         if (!track.initialized) {
             track.initialized = true;
             track.initialHp = std::max<uint8_t>(hp, 1);
@@ -230,7 +230,7 @@ class GenericBossHealthPhaseAdapter : public BossSyncAdapter {
         }
 
         const std::string bossActorKey = BuildActorKeyLocal(actor, play->sceneNum);
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
 
         nlohmann::json snap;
         snap["bossActorKey"] = bossActorKey;

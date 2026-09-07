@@ -34,11 +34,27 @@ struct MorphaTrackState {
     uint8_t lastHp = 1;
     int lastPhaseId = -1;
     int lastTentacleCount = 0;
+    int lastCoreState = -999;
     std::unordered_set<std::string> tentacleKeys;
     std::deque<nlohmann::json> pendingEvents;
 };
 
 std::unordered_map<std::string, MorphaTrackState> gMorphaTrack;
+
+// BossMo's real core action-state (move/make-tent/underwater/stunned/attack/
+// retreat) lives in work[MO_CORE_ACTION_STATE] (s16 array index 0, struct
+// offset 0x0158) — actor->params is fixed identity (-1=core/100=tentacle), not
+// the dynamic state. BossMo_Core stays the actionFunc for the whole fight, so
+// forcing this field directly is safe (verified against z_boss_mo.c/.h).
+constexpr size_t kMoActionStateOffset = 0x0158; // work[MO_CORE_ACTION_STATE]
+
+int16_t ReadMoActionState(const Actor* actor) {
+    return *(const int16_t*)((const char*)actor + kMoActionStateOffset);
+}
+
+void WriteMoActionState(Actor* actor, int16_t value) {
+    *(int16_t*)((char*)actor + kMoActionStateOffset) = value;
+}
 
 std::string BuildActorKeyLocal(const Actor* actor, s16 sceneNum) {
     char buf[128];
@@ -137,8 +153,25 @@ class MorphaBossAdapter : public BossSyncAdapter {
 
         QueueTentacleLossEvents(track, currentTentacles, coreKey, actor, play);
 
-        const uint8_t hp = actor->colChkInfo.health;
-        const int phaseNow = ComputePhaseFromCoreState((int)actor->params, tentacleCount);
+        const uint8_t hp = ReadClampedBossHealth(actor);
+        const int coreState = ReadMoActionState(actor);
+        const int phaseNow = ComputePhaseFromCoreState(coreState, tentacleCount);
+
+        // Attack sync: captured before the early-return branches (which already
+        // advance bookkeeping fields), so a same-frame HP/phase change can't
+        // silently swallow an attack-state change.
+        if (track.initialized && coreState != track.lastCoreState) {
+            nlohmann::json actionEvent;
+            actionEvent["eventType"] = "BOSS_ACTION_STATE";
+            actionEvent["eventKey"] = coreKey;
+            actionEvent["bossActorKey"] = coreKey;
+            actionEvent["bossActorId"] = (int)actor->id;
+            actionEvent["actionState"] = coreState;
+            actionEvent["seq"] = (uint32_t)play->state.frames;
+            actionEvent["masterFrame"] = (uint32_t)play->state.frames;
+            actionEvent["lateJoinCanSkipIntro"] = true;
+            track.pendingEvents.push_back(actionEvent);
+        }
 
         if (!track.initialized) {
             track.initialized = true;
@@ -244,6 +277,9 @@ class MorphaBossAdapter : public BossSyncAdapter {
         }
 
         track.tentacleKeys = currentTentacles;
+        // Always advance, even when no other branch fired this frame — otherwise
+        // the action-state detector above would re-queue duplicate events forever.
+        track.lastCoreState = coreState;
 
         if (!track.pendingEvents.empty()) {
             nlohmann::json next = track.pendingEvents.front();
@@ -299,6 +335,21 @@ class MorphaBossAdapter : public BossSyncAdapter {
             if (tentacle && tentacle->update != nullptr) {
                 tentacle->colChkInfo.health = 0;
             }
+        } else if (eventType == "BOSS_ACTION_STATE") {
+            Actor* core = nullptr;
+            Actor* actor = play->actorCtx.actorLists[ACTORCAT_BOSS].head;
+            while (actor != nullptr) {
+                if (actor->id == ACTOR_BOSS_MO && actor->params == kMorphaCoreParam &&
+                    BuildActorKeyLocal(actor, play->sceneNum) == bossActorKey) {
+                    core = actor;
+                    break;
+                }
+                actor = actor->next;
+            }
+            if (!core || core->update == nullptr) return;
+
+            const int16_t actionState = (int16_t)payload.value("actionState", (int)0);
+            WriteMoActionState(core, actionState);
         }
     }
 
@@ -319,16 +370,17 @@ class MorphaBossAdapter : public BossSyncAdapter {
             node = node->next;
         }
 
-        const uint8_t hp = actor->colChkInfo.health;
+        const uint8_t hp = ReadClampedBossHealth(actor);
 
         nlohmann::json snap;
         snap["bossActorKey"] = coreKey;
         snap["bossActorId"] = (int)actor->id;
         snap["sceneNum"] = play->sceneNum;
         snap["roomNum"] = (int)play->roomCtx.curRoom.num;
-        snap["phaseId"] = ComputePhaseFromCoreState((int)actor->params, tentacleCount);
+        snap["phaseId"] = ComputePhaseFromCoreState(ReadMoActionState(actor), tentacleCount);
         snap["hp"] = (int)hp;
         snap["tentaclesAlive"] = tentacleCount;
+        snap["actionState"] = ReadMoActionState(actor);
         snap["lateJoinCanSkipIntro"] = true;
         return snap;
     }
@@ -354,6 +406,10 @@ class MorphaBossAdapter : public BossSyncAdapter {
         if (!morpha || !morpha->update) return;
 
         morpha->colChkInfo.health = hp;
+
+        if (morpha->params == kMorphaCoreParam && snapshot.contains("actionState")) {
+            WriteMoActionState(morpha, (int16_t)snapshot.value("actionState", (int)0));
+        }
     }
 };
 
