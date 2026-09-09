@@ -872,6 +872,7 @@ void Anchor::RegisterHooks() {
         savedEnemyDrawFuncs.clear();
         trackedBgActors.clear();
         bgActorKeyframeTarget.clear();
+        gndLastCurPainting.clear();
         pendingBoulderSpawns.clear();
         lastBoulderTriggerFrameByKey.clear();
         hasMasterFrameSync = false;
@@ -1165,6 +1166,51 @@ void Anchor::RegisterHooks() {
 
         const std::string eventKey = event.value("eventKey", GetActorKey(actor, gPlayState->sceneNum));
         SendPacket_RoomEvent(eventType, eventKey, event, false);
+    });
+
+    // Phantom Ganon painting-select sync (Forest Temple Boss).
+    // ACTOR_EN_FHG (the horse) lives in ACTORCAT_BG and is never frozen, so every
+    // client's BossGanondrof_Neutral -> EnfHG_Retreat independently rolls its own
+    // Rand_ZeroOne() for "which painting is real" / "where the decoy hides".
+    // Without forcing this, each client sees the boss emerge from a different
+    // painting with a differently-placed (or absent-looking) decoy, which both
+    // breaks the guessing minigame and makes it trivially easy for non-master
+    // clients (whichever painting glows locally IS the real one for them).
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* actorRef) {
+        if (!IsSaveLoaded() || !gPlayState || !IsRoomMaster()) return;
+        if (gPlayState->sceneNum != SCENE_FOREST_TEMPLE_BOSS) return;
+
+        Actor* actor = static_cast<Actor*>(actorRef);
+        constexpr s16 kGndRealBossParam = 1;         // GND_REAL_BOSS
+        constexpr s16 kGndFakeBossBase = 10;          // GND_FAKE_BOSS
+        constexpr size_t kGndCurPaintingOffset = 0x01C2; // EnfHG::curPainting
+
+        if (actor->id != ACTOR_EN_FHG || actor->params != kGndRealBossParam) return;
+
+        const int16_t curPainting = *(const int16_t*)((const char*)actor + kGndCurPaintingOffset);
+        if (curPainting < 0 || curPainting > 5) return; // not initialized yet
+
+        const std::string key = GetActorKey(actor, gPlayState->sceneNum);
+        auto it = gndLastCurPainting.find(key);
+        const bool isFirstObservation = (it == gndLastCurPainting.end());
+        if (!isFirstObservation && it->second == curPainting) return;
+        gndLastCurPainting[key] = curPainting;
+        if (isFirstObservation) return; // seed only — first real cycle already ran before we could sync it
+
+        // actor->child is a single pointer (last actor spawned via
+        // Actor_SpawnAsChild), not a sibling list — the fresh decoy rider
+        // spawned earlier this same frame inside EnfHG_Retreat.
+        int16_t fakeIdx = -1;
+        Actor* child = actor->child;
+        if (child != nullptr && child->id == ACTOR_BOSS_GANONDROF && child->params >= kGndFakeBossBase) {
+            fakeIdx = (int16_t)(child->params - kGndFakeBossBase);
+        }
+        if (fakeIdx < 0) return;
+
+        nlohmann::json event;
+        event["realIdx"] = (int)curPainting;
+        event["fakeIdx"] = (int)fakeIdx;
+        SendPacket_RoomEvent("GND_PAINTING_SELECT", key, event, false);
     });
 
     // Non-authority: freeze enemy AI when the authority is in the same scene+room.

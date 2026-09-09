@@ -428,6 +428,70 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
             }
         }
 
+    } else if (eventType == "GND_PAINTING_SELECT") {
+        // Force the SAME real/fake painting choice the master already rolled —
+        // ACTOR_EN_FHG is ACTORCAT_BG and is never frozen, so every client
+        // would otherwise pick its own random painting independently. See
+        // sPaintings/oppositeIndex in z_en_fhg.c — duplicated here since that
+        // table is file-static and not exported.
+        if (IsRoomMaster()) return; // master already applied its own roll natively
+        const std::string hostHorseKey = eventData.value("bossActorKey", eventKey);
+        const int realIdx = eventData.value("realIdx", -1);
+        const int fakeIdx = eventData.value("fakeIdx", -1);
+        if (realIdx < 0 || realIdx > 5) return;
+
+        struct GndPaintingSlot { Vec3f pos; s16 yRot; };
+        static const GndPaintingSlot kGndPaintings[6] = {
+            { { 0.0f, 60.0f, -315.0f }, 0x0000 },   { { -260.0f, 60.0f, -145.0f }, 0x2AAA },
+            { { -260.0f, 60.0f, 165.0f }, 0x5554 }, { { 0.0f, 60.0f, 315.0f }, 0x7FFE },
+            { { 260.0f, 60.0f, 155.0f }, 0xAAA8 },  { { 260.0f, 60.0f, -155.0f }, 0xD552 },
+        };
+        constexpr f32 kBossroomCenterX = 14.0f;
+        constexpr f32 kBossroomCenterY = -33.0f;
+        constexpr f32 kBossroomCenterZ = -3315.0f;
+        constexpr s16 kGndRealBossParam = 1;
+        constexpr s16 kGndFakeBossBase = 10;
+
+        auto applyPaintingPose = [&](Actor* horse, s16 paintingIdx) {
+            const GndPaintingSlot& slot = kGndPaintings[paintingIdx];
+            horse->world.pos.x = (1.3f * slot.pos.x) + (kBossroomCenterX - 4.0f);
+            horse->world.pos.y = slot.pos.y + (kBossroomCenterY + 153.0f);
+            horse->world.pos.z = (1.3f * slot.pos.z) - -(kBossroomCenterZ - 10.0f);
+            horse->shape.rot.y = horse->world.rot.y = slot.yRot;
+            *(int16_t*)((char*)horse + 0x01C2) = paintingIdx;                  // curPainting
+            *(int16_t*)((char*)horse + 0x01C4) = (s16)((paintingIdx + 3) % 6); // targetPainting
+        };
+
+        Actor* realHorse = nullptr;
+        Actor* node = gPlayState->actorCtx.actorLists[ACTORCAT_BG].head;
+        while (node != nullptr) {
+            if (node->id == ACTOR_EN_FHG && node->params == kGndRealBossParam &&
+                GetActorKey(node, gPlayState->sceneNum) == hostHorseKey) {
+                realHorse = node;
+                break;
+            }
+            node = node->next;
+        }
+        if (!realHorse || realHorse->update == nullptr) return;
+        applyPaintingPose(realHorse, (s16)realIdx);
+
+        if (fakeIdx >= 0 && fakeIdx <= 5) {
+            // actor->child is a single pointer (last spawned child), not a
+            // sibling list: the decoy rider is the real horse's child, and the
+            // decoy horse is in turn the decoy rider's own child (see
+            // BossGanondrof_Init).
+            Actor* fakeRider = realHorse->child;
+            if (fakeRider != nullptr && fakeRider->id == ACTOR_BOSS_GANONDROF &&
+                fakeRider->params >= kGndFakeBossBase) {
+                fakeRider->params = (s16)(fakeIdx + kGndFakeBossBase);
+                Actor* fakeHorse = fakeRider->child;
+                if (fakeHorse != nullptr && fakeHorse->id == ACTOR_EN_FHG && fakeHorse->update != nullptr) {
+                    fakeHorse->params = (s16)(fakeIdx + kGndFakeBossBase);
+                    applyPaintingPose(fakeHorse, (s16)fakeIdx);
+                }
+            }
+        }
+
     } else if (eventType == "BOSS_SUBACTOR_KILL") {
         std::string targetActorKey = eventData.value("targetActorKey", std::string(""));
         if (targetActorKey.empty()) return;

@@ -140,6 +140,11 @@ class Anchor : public Network {
     // Keyed by actorKey. Cleared on scene change.
     std::unordered_map<std::string, ActorFunc> savedEnemyDrawFuncs;
 
+    // Authority: last observed EnfHG::curPainting per real Phantom Ganon horse,
+    // used to detect a new painting-select cycle and re-broadcast it. Cleared
+    // on scene change together with the other per-scene maps.
+    std::unordered_map<std::string, int16_t> gndLastCurPainting;
+
     // BgKeyframeSync: authority send-side tracking per background actor.
     // Cleared on scene change together with trackedEnemyPos.
     using Clock = std::chrono::steady_clock;
