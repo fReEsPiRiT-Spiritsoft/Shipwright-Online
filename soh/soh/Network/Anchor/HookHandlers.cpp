@@ -49,6 +49,7 @@ bool ShouldKeepDungeonBgActorUpdating(const Actor* actor) {
     }
 
     switch (actor->id) {
+        // Also raises/lowers the Jabu-Jabu room water level via its own actionFunc.
         case ACTOR_BG_BDAN_OBJECTS:
         case ACTOR_BG_BDAN_SWITCH:
         case ACTOR_BG_BOMBWALL:
@@ -78,9 +79,6 @@ bool ShouldKeepDungeonBgActorUpdating(const Actor* actor) {
         case ACTOR_BG_MIZU_WATER:
         case ACTOR_BG_MIZU_UZU:
         case ACTOR_BG_MIZU_SHUTTER:
-        // Jabu-Jabu platforms/elevators — also raises/lowers the room water level
-        // via its own actionFunc, which must keep running on every client.
-        case ACTOR_BG_BDAN_OBJECTS:
         case ACTOR_BG_HAKA_WATER:
         case ACTOR_BG_HAKA_GATE:
         case ACTOR_BG_HAKA_MEGANE:
