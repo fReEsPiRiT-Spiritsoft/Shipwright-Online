@@ -78,6 +78,9 @@ bool ShouldKeepDungeonBgActorUpdating(const Actor* actor) {
         case ACTOR_BG_MIZU_WATER:
         case ACTOR_BG_MIZU_UZU:
         case ACTOR_BG_MIZU_SHUTTER:
+        // Jabu-Jabu platforms/elevators — also raises/lowers the room water level
+        // via its own actionFunc, which must keep running on every client.
+        case ACTOR_BG_BDAN_OBJECTS:
         case ACTOR_BG_HAKA_WATER:
         case ACTOR_BG_HAKA_GATE:
         case ACTOR_BG_HAKA_MEGANE:
@@ -1719,9 +1722,10 @@ void Anchor::RegisterHooks() {
     // Guarded by roomState.syncBGObjects (separate from syncEnemies) so BG and enemy sync
     // can be toggled independently.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
-        if (!IsEnemyAuthority() || !IsSaveLoaded() || !gPlayState) return;
+        if (!IsSaveLoaded() || !gPlayState) return;
         if (!roomState.syncBGObjects) return;
         if (!IsAnyClientInSameRoom()) return;
+        const bool isAuthority = IsEnemyAuthority();
 
         for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
@@ -1740,6 +1744,17 @@ void Anchor::RegisterHooks() {
                 // routes and runs locally on each client after spawn-sync.
                 // Broadcasting its position would fight local physics (spin/glitch).
                 if (actor->id == ACTOR_EN_GOROIWA) {
+                    actor = actor->next;
+                    continue;
+                }
+                // Regular BG actors (platforms, doors, elevators) are only ever
+                // broadcast by the authority. Link-movable puzzle blocks are the
+                // exception: they are pushed by whichever client stands next to
+                // them (never frozen, see ShouldKeepDungeonBgActorUpdating), so
+                // ANY client must be able to broadcast its own local push —
+                // otherwise only the master's pushes are ever seen by others and
+                // the block silently desyncs the moment a non-master pushes it.
+                if (!isAuthority && !IsLinkMovablePuzzleActor(actor)) {
                     actor = actor->next;
                     continue;
                 }
@@ -1788,8 +1803,9 @@ void Anchor::RegisterHooks() {
     // world.rot.y is snapped directly (no blend) because rotation reversals must be
     // immediate — blending a rotation that just reversed would show the wrong direction.
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() {
-        if (IsEnemyAuthority() || !IsSaveLoaded() || !gPlayState) return;
+        if (!IsSaveLoaded() || !gPlayState) return;
         if (!roomState.syncBGObjects || bgActorKeyframeTarget.empty()) return;
+        const bool isAuthority = IsEnemyAuthority();
 
         for (int cat : { ACTORCAT_BG, ACTORCAT_PROP }) {
             Actor* actor = gPlayState->actorCtx.actorLists[cat].head;
@@ -1803,6 +1819,16 @@ void Anchor::RegisterHooks() {
                 }
                 // EN_GOROIWA: spawn-only sync, runs locally after that.
                 if (actor->id == ACTOR_EN_GOROIWA) {
+                    actor = actor->next;
+                    continue;
+                }
+                // The authority is the source of truth for regular BG actors
+                // (platforms, doors, elevators) and never blends toward anyone
+                // else's keyframe for them. Link-movable puzzle blocks are the
+                // exception: the authority must also blend toward a push made
+                // by a non-master client, otherwise the master (and every other
+                // client relying on the master's own broadcasts) never sees it.
+                if (isAuthority && !IsLinkMovablePuzzleActor(actor)) {
                     actor = actor->next;
                     continue;
                 }
@@ -1869,15 +1895,16 @@ void Anchor::RegisterHooks() {
     });
 
     // ── Ocarina song forwarding ───────────────────────────────────────────────
-    // When a non-room-master plays an ocarina song successfully, the BG/enemy
-    // sync system freezes many of the actors that respond to songs (waterfalls,
-    // Jabu-Jabu, temple triggers).  Forward the song action to the room master
-    // as a ROOM_EVENT so the master can apply it and drive the frozen actors.
-    // The room master's own OnOcarinaSongAction fires locally and is not forwarded
-    // (it would re-enter this hook on the master side).
+    // Any client that successfully plays an ocarina song must tell every other
+    // client in the room: BG actors that respond to songs (waterfalls, Jabu-Jabu,
+    // temple triggers) are frozen for non-master clients and need the master to
+    // drive them, while unfrozen NPCs (e.g. Darunia reacting to Saria's Song) need
+    // EVERY client — master included — to react locally. Skip while we're just
+    // applying someone else's remote song (see suppressOcarinaRebroadcast) to
+    // avoid an infinite echo between all clients in the room.
     COND_HOOK(OnOcarinaSongAction, isConnected, [&]() {
         if (!IsSaveLoaded() || !gPlayState) return;
-        if (IsRoomMaster()) return; // master reacts locally; no forwarding needed
+        if (suppressOcarinaRebroadcast) return;
 
         nlohmann::json data;
         data["ocarinaMode"]    = (int)gPlayState->msgCtx.ocarinaMode;

@@ -196,6 +196,12 @@ class Anchor : public Network {
     // boulder so the local OnActorSpawn hook does not echo it back.
     bool isSpawningRemoteBoulder = false;
 
+    // Both sides: set to true while applying a remote OCARINA_SONG_ACTION so the
+    // OnOcarinaSongAction send-hook (fired by GameInteractor_ExecuteOnOcarinaSongAction)
+    // does not re-broadcast the song we just received, which would otherwise echo
+    // forever between all clients in the room.
+    bool suppressOcarinaRebroadcast = false;
+
     // Boulder sync timing: localFrame = masterFrame + masterFrameToLocalOffset.
     // Set from ROOM_SNAPSHOT when entering a room, then used to align incoming
     // BOULDER_SPAWN triggerFrame values to local frame time.

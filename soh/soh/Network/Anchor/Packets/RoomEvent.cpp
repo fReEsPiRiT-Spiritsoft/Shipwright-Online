@@ -10,6 +10,7 @@ extern "C" {
 #include "functions.h"
 #include "src/overlays/actors/ovl_En_Ru1/z_en_ru1.h"
 #include "src/overlays/actors/ovl_Bg_Ydan_Sp/z_bg_ydan_sp.h"
+#include "src/overlays/actors/ovl_Boss_Goma/z_boss_goma.h"
 extern PlayState* gPlayState;
 }
 
@@ -384,21 +385,25 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         }
 
     } else if (eventType == "OCARINA_SONG_ACTION") {
-        // A non-master client played an ocarina song successfully.  Apply the
-        // same song-action result on the room master so BG actors that respond
-        // to songs (waterfall, Jabu-Jabu, temple triggers) receive the cue.
-        // We only apply if WE are the room master; other clients ignore this.
-        if (!IsRoomMaster()) return;
+        // Another client played an ocarina song successfully. Apply the same
+        // song-action result locally on EVERY receiving client (not just the
+        // master): the master needs it to drive frozen BG actors (waterfall,
+        // Jabu-Jabu, temple triggers), while every other client needs it so
+        // unfrozen NPCs (e.g. Darunia reacting to Saria's Song) react too —
+        // otherwise only the player who physically played the song (via native
+        // local engine logic) and the master ever see the reaction.
         if (!gPlayState) return;
         u16 remoteMode   = (u16)eventData.value("ocarinaMode",    0);
         u16 remoteAction = (u16)eventData.value("ocarinaAction",  0);
         u8  remoteSong   = (u8)eventData.value("lastPlayedSong",  0);
-        SPDLOG_INFO("[Anchor:OcarinaSync] MASTER: applying remote song | mode={} action={} song={}",
+        SPDLOG_INFO("[Anchor:OcarinaSync] applying remote song | mode={} action={} song={}",
                     (int)remoteMode, (int)remoteAction, (int)remoteSong);
         gPlayState->msgCtx.ocarinaMode    = (u16)remoteMode;
         gPlayState->msgCtx.ocarinaAction  = remoteAction;
         gPlayState->msgCtx.lastPlayedSong = remoteSong;
+        suppressOcarinaRebroadcast = true;
         GameInteractor_ExecuteOnOcarinaSongAction();
+        suppressOcarinaRebroadcast = false;
 
     } else if (eventType == "BOSS_DEATH_COMMIT") {
         // Set hp=0 so the boss's own AI triggers its native death sequence
@@ -421,6 +426,21 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
                 if (GetActorKey(actor, gPlayState->sceneNum) == bossActorKey) {
                     if (actor->update != nullptr && actor->colChkInfo.health != 0) {
                         actor->colChkInfo.health = 0;
+                        // Some bosses only check for death inside their own on-hit
+                        // collision callback, never as a per-frame health poll.
+                        // Gohma is confirmed affected: a non-authority client never
+                        // lands the real killing blow locally (damage is forwarded
+                        // to the master for evaluation), so its local copy would
+                        // never notice hp==0 and just keeps running its normal AI
+                        // until the later ACTOR_KILLED packet force-removes it —
+                        // leaving battle music playing and skipping the warp/heart
+                        // spawn that only the native death sequence performs.
+                        // BossGoma_SetupDefeated is non-static (external linkage)
+                        // and self-contained, so it's safe to invoke directly here
+                        // to force the same local cinematic the master is playing.
+                        if (actor->id == ACTOR_BOSS_GOMA) {
+                            BossGoma_SetupDefeated((BossGoma*)actor, gPlayState);
+                        }
                     }
                     return;
                 }
