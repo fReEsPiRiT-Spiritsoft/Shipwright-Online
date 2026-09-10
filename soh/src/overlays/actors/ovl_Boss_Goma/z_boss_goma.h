@@ -153,4 +153,6 @@ typedef struct BossGoma {
     /* 0x07DC */ ColliderJntSphElement colliderItems[13];
 } BossGoma; // size = 0x0B1C
 
+void BossGoma_SetupDefeated(BossGoma* this, PlayState* play);
+
 #endif
