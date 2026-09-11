@@ -3,52 +3,48 @@
 
 ---
 
-## Ship of Harkinian — This Fork: Voll synchronisierte Co‑op / MMO‑Erfahrung
+## Ship of Harkinian — This Fork: Fully Synchronized Co‑op / MMO Experience
 
-Dies ist ein Fork des Projekts "Ship of Harkinian" mit dem Ziel, eine Host‑Authority Server/Client‑Architektur zu implementieren, die Gegner-, Welt‑ und Boss‑Zustände vollständig synchronisiert, sodass sich das Spiel wie eine moderne MMO/Co‑op‑Erfahrung anfühlt.
+This is a fork of Ship of Harkinian with the goal of implementing a host-authority server/client architecture that fully synchronizes enemy, world, and boss state so the game feels like a modern MMO-style co-op experience.
 
-- Hinweis auf das Original: Das Originalprojekt findest du unter https://github.com/HarbourMasters/Shipwright — dieser Fork baut darauf auf und erweitert es um umfangreiche Netzwerk‑Synchronisationen.
-- Was dieser Fork bietet: Host‑Authority Enemy Sync, Client→Host Schadensermittlung, dynamisches Aggro‑Spoofing, Raum‑Events, Zeit‑Sync und viele weitere Mechaniken, die Mehrspieler‑Koop stabil und deterministisch machen.
+- Original project: https://github.com/HarbourMasters/Shipwright
+- This fork builds on that base and adds extensive network synchronization systems for deterministic multiplayer gameplay.
+- Core focus: host-authority room logic, actor state syncing, boss transitions, item progression, and shared world events across connected clients.
 
 ---
 
 <a href="features.md">
-  <img src="https://img.shields.io/badge/Alle%20Features-features.md-orange?style=for-the-badge&logo=readme" alt="Alle Features">
+  <img src="https://img.shields.io/badge/All%20Features-features.md-orange?style=for-the-badge&logo=readme" alt="All Features">
 </a>
 
 ### 📥 Downloads
 
 <a href="https://github.com/fReEsPiRiT-Spiritsoft/Shipwright-Online/releases">
-  <img src="https://img.shields.io/badge/DOWNLOADS-darkgray?style=for-the-badge" alt="DOWNLOAD>
+  <img src="https://img.shields.io/badge/DOWNLOADS-darkgray?style=for-the-badge" alt="Downloads">
 </a>
 
-
-I am trying to make a server/client version of SoH to fully synchronize the co-op game experience.
+This project aims to turn SoH into a server/client multiplayer version with fully synchronized co-op progression and shared gameplay state.
 
 # Features Added (Host-Authority Co-op Prototype)
 
-This fork implements a Host-Authority Multiplayer Architecture designed for enemy and world synchronization during co-op and Randomizer play.
+This fork implements a host-authority multiplayer architecture designed for enemy and world synchronization during co-op and randomizer play.
 
 ### Core Synchronization & Combat Mechanics
-* **Host-Authority Enemy Sync:** Forces the freeze flag on all client-side actors (`actor->flags |= ACTOR_FLAG_27` / `Actor_SetFreezeFlags`) when players are in the same room. Eliminates physics desyncs and rubberbanding by streaming `world.pos`, `world.rot.y`, and `skelAnime` states directly from the Host.
-* **Client-to-Host Damage Routing:** Hooks into the collision engine (`acHit` / `ColliderCylinder`) to intercept client-side weapon hits. The local damage calculation is intercepted on the client and forwarded via network packets to the Host. The Host evaluates the hit using native engine routines and triggers the synced death sequence.
-* **Dynamic Aggro Spoofing:** Evaluates distances (`Math3D_Vec3fDistSq`) on the Host between enemies and both players. If the client is closer, the enemy AI targeting pointer is swapped to the Client Dummy, forcing enemies to track and attack the client.
-* **Configurable Enemy Sync Radius:** The Host can define a world-unit radius within which enemy positions and animations are broadcast. Outside this radius the client runs its own local AI without network traffic. Radius and tick rate (5 / 10 / 20 Hz) are configurable live from the Admin Panel.
-* **Configurable Enemy Sync Tick Rate:** Enemy position and animation data can be throttled to 5 Hz (every 4th frame), 10 Hz (every 2nd frame) or 20 Hz (every frame) to trade smoothness against bandwidth.
+* **Host-Authority Enemy Sync:** Forces the freeze flag on all client-side actors (`actor->flags |= ACTOR_FLAG_27` / `Actor_SetFreezeFlags`) when players are in the same room. This prevents physics desyncs and rubberbanding by streaming `world.pos`, `world.rot.y`, and `skelAnime` states directly from the host.
+* **Client-to-Host Damage Routing:** Hooks into the collision engine (`acHit` / `ColliderCylinder`) to intercept client-side weapon hits. The local damage calculation is intercepted on the client and forwarded via network packets to the host. The host evaluates the hit using native engine routines and triggers the synced death sequence.
+* **Dynamic Aggro Spoofing:** Evaluates distances (`Math3D_Vec3fDistSq`) on the host between enemies and both players. If the client is closer, the enemy AI targeting pointer is swapped to the client dummy, forcing enemies to track and attack the client.
+* **Configurable Enemy Sync Radius:** The host can define a world-unit radius within which enemy positions and animations are broadcast. Outside this radius, the client runs its own local AI without network traffic. Radius and tick rate (5 / 10 / 20 Hz) are configurable live from the admin panel.
+* **Configurable Enemy Sync Tick Rate:** Enemy position and animation data can be throttled to 5 Hz (every 4th frame), 10 Hz (every 2nd frame), or 20 Hz (every frame) to trade smoothness against bandwidth.
 
 ### Dynamic World & Progression Logic
-* **Dynamic Room Switching:** Pauses network actor syncing when players separate into different scenes or rooms. Lifts the client-side freeze flags instantly, allowing the client to play against local single-player AI without causing memory or nullpointer crashes.
-* **State Merging & Re-Entry Catch-Up:** When players rejoin in the same area, the engine tracks who entered first. If the client cleared out enemies while exploring alone, a death list packet triggers `Actor_Kill` on those specific IDs on the Host before the Host-Authority sync hooks back in.
-* **Out-of-Radius Kill Persistence:** Enemy kills made by a non-authority player outside the sync radius (or while the authority was in a different room) are queued locally and forwarded the moment the authority enters the same room, so no cleared room can ever "reset" on the other player's screen.
-* **Physical Item Exchange Mode:** When enabled from the Admin Panel, received items and scene flags are buffered instead of applied instantly. Items are only handed to the receiving player once both players are within ~1 metre of each other. The handover triggers the native "hold item above head" animation and a fully localized in-game textbox: *"Du hast von [Name] das Item [Name] erhalten!"* — making every trade feel like a proper in-world interaction.
+* **Dynamic Room Switching:** Pauses network actor syncing when players separate into different scenes or rooms. Client-side freeze flags are lifted immediately so each client can continue local gameplay without memory or nullpointer crashes.
+* **State Merging & Re-Entry Catch-Up:** When players rejoin in the same area, the engine tracks who entered first. If the client cleared out enemies while exploring alone, a death list packet triggers `Actor_Kill` on the corresponding IDs on the host before host-authority sync resumes.
+* **Out-of-Radius Kill Persistence:** Enemy kills made by a non-authority player outside the sync radius (or while the authority was in a different room) are queued locally and forwarded the moment the authority enters the same room, so no cleared room can ever reset on the other player's screen.
+* **Physical Item Exchange Mode:** When enabled from the admin panel, received items and scene flags are buffered instead of applied instantly. Items are only handed to the receiving player once both players are within roughly one meter of each other. The handover triggers the native hold-item-above-head animation and a localized in-game textbox: *"You received [Item] from [Name]!"*
 
 ### Environment & Global State
-* **Cross-Zone Day/Time Synchronization:** Synchronizes the global time state (`gSaveContext.dayTime`) across the network, enforcing the Host as the primary timekeeper.
-* **Global Time-Lock Feature:** Checks `sceneNum` for both players. If either the host or the client enters an area where time naturally stops (e.g., Kakariko Village, Market, Dungeons), the time counter freezes globally for both players, even if the other player is currently in Hyrule Field.
-
-
-
-
+* **Cross-Zone Day/Time Synchronization:** Synchronizes the global time state (`gSaveContext.dayTime`) across the network, enforcing the host as the primary timekeeper.
+* **Global Time-Lock Feature:** Checks `sceneNum` for both players. If either the host or the client enters an area where time naturally stops (for example Kakariko Village, Market, or dungeons), the time counter freezes globally for both players, even if the other player is currently in Hyrule Field.
 
 ## Website
 
