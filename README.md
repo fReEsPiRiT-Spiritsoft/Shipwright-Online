@@ -1,7 +1,7 @@
 
 🇩🇪 [Deutsche Version / German version](README_DE.md)
 
----
+---.
 
 ## Ship of Harkinian — This Fork: Fully Synchronized Co‑op / MMO Experience
 
