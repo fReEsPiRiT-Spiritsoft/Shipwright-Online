@@ -24,6 +24,6 @@ typedef struct ObjTimeblock {
     /* 0x0178 */ u8 isVisible;
 } ObjTimeblock; // size = 0x017C
 
-void ObjTimeblock_ForceSongComplete(ObjTimeblock* this, PlayState* play);
+void ObjTimeblock_ForceSongComplete(ObjTimeblock* thisx, PlayState* play);
 
 #endif

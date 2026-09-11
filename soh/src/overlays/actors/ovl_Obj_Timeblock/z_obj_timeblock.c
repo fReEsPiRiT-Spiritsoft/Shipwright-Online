@@ -219,8 +219,8 @@ s32 ObjTimeblock_ForceComplete(ObjTimeblock* this, PlayState* play) {
     return true;
 }
 
-void ObjTimeblock_ForceSongComplete(ObjTimeblock* this, PlayState* play) {
-    this->songObserverFunc = ObjTimeblock_ForceComplete;
+void ObjTimeblock_ForceSongComplete(ObjTimeblock* thisx, PlayState* play) {
+    thisx->songObserverFunc = ObjTimeblock_ForceComplete;
 }
 
 void ObjTimeblock_SetupNormal(ObjTimeblock* this) {
