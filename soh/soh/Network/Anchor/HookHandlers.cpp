@@ -33,6 +33,7 @@ extern "C" {
 #include "src/overlays/actors/ovl_En_Si/z_en_si.h"
 #include "src/overlays/actors/ovl_En_Sw/z_en_sw.h"
 #include "src/overlays/actors/ovl_En_Ru1/z_en_ru1.h"
+#include "src/overlays/actors/ovl_En_Okarina_Tag/z_en_okarina_tag.h"
 #include "src/overlays/actors/ovl_Item_B_Heart/z_item_b_heart.h"
 #include "src/overlays/actors/ovl_Obj_Bombiwa/z_obj_bombiwa.h"
 #include "src/overlays/actors/ovl_Obj_Hamishi/z_obj_hamishi.h"
@@ -48,9 +49,18 @@ bool ShouldKeepDungeonBgActorUpdating(const Actor* actor) {
         return false;
     }
 
+    // Only the Octo-platform (params==0, drives the Big Octo child-state
+    // handshake) and the water-level actor (params==2, BgBdanObjects_WaitForSwitch
+    // -> ChangeWaterBoxLevel, raises/lowers colHeader->waterBoxes[7] based on the
+    // already flag-synced switchFlag) need to keep running locally. The elevator
+    // (params==1) and falling-platform variant are plain moving platforms and
+    // must stay network-position-driven like any other BG mover, otherwise their
+    // motion visibly desyncs between clients.
+    if (actor->id == ACTOR_BG_BDAN_OBJECTS) {
+        return actor->params == 0 || actor->params == 2;
+    }
+
     switch (actor->id) {
-        // Also raises/lowers the Jabu-Jabu room water level via its own actionFunc.
-        case ACTOR_BG_BDAN_OBJECTS:
         case ACTOR_BG_BDAN_SWITCH:
         case ACTOR_BG_BOMBWALL:
         case ACTOR_BG_HIDAN_FIREWALL:
@@ -1909,6 +1919,36 @@ void Anchor::RegisterHooks() {
         data["ocarinaAction"]  = (int)gPlayState->msgCtx.ocarinaAction;
         data["lastPlayedSong"] = (int)gPlayState->msgCtx.lastPlayedSong;
         SendPacket_RoomEvent("OCARINA_SONG_ACTION", "ocarina_song_action", data, false);
+
+        // EnOkarinaTag (song-check spots — e.g. Zora's River waterfall) is a
+        // per-actor, proximity-gated local state machine: only the actively
+        // playing client's own instance ever reaches OCARINA_MODE_03 and calls
+        // Flags_SetSwitch. Forwarding msgCtx above does NOT make a remote
+        // client's own idle EnOkarinaTag react — so directly replicate the
+        // success (switch flag + confirmation chime) for every peer within
+        // sync range, as if they had played the song themselves.
+        if (gPlayState->msgCtx.ocarinaMode == OCARINA_MODE_03) {
+            Player* player = GET_PLAYER(gPlayState);
+            Actor* node = player ? gPlayState->actorCtx.actorLists[ACTORCAT_PROP].head : nullptr;
+            while (node != nullptr) {
+                if (node->id == ACTOR_EN_OKARINA_TAG) {
+                    EnOkarinaTag* tag = (EnOkarinaTag*)node;
+                    if (tag->ocarinaSong == gPlayState->msgCtx.lastPlayedSong &&
+                        node->xzDistToPlayer < (90.0f + tag->interactRange) &&
+                        fabsf(player->actor.world.pos.y - node->world.pos.y) < 80.0f) {
+                        nlohmann::json tagData;
+                        tagData["switchFlag"] = (int)tag->switchFlag;
+                        tagData["type"] = (int)tag->type;
+                        tagData["x"] = node->world.pos.x;
+                        tagData["y"] = node->world.pos.y;
+                        tagData["z"] = node->world.pos.z;
+                        SendPacket_RoomEvent("OCARINA_TAG_COMPLETED", "ocarina_tag_completed", tagData, false);
+                        break;
+                    }
+                }
+                node = node->next;
+            }
+        }
     });
 
     // Non-room-master minigame proxy:
@@ -1986,6 +2026,10 @@ void Anchor::RegisterHooks() {
             data["y"] = held->world.pos.y;
             data["z"] = held->world.pos.z;
             data["rotY"] = (int)held->world.rot.y;
+            // Included so a remote client can respawn her if her local room
+            // unloaded and destroyed her mid-carry (room transitions elsewhere
+            // in the dungeon) — her actor.params encodes her cutscene/type state.
+            data["params"] = (int)held->params;
         }
 
         SendPacket_RoomEvent("RUTO_CARRY_STATE", "ruto_carry_state", data, /*streaming=*/true);

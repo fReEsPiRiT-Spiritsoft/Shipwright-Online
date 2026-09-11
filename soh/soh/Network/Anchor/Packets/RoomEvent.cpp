@@ -277,23 +277,37 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         if (gPlayState->sceneNum != SCENE_JABU_JABU) return;
 
         const bool carrying = eventData.value("carrying", false);
+        const f32 x = eventData.value("x", 0.0f);
+        const f32 y = eventData.value("y", 0.0f);
+        const f32 z = eventData.value("z", 0.0f);
 
         EnRu1* ruto = nullptr;
         Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_NPC].head;
         while (actor != nullptr) {
-            if (actor->id == ACTOR_EN_RU1 && (actor->room == packetRoom || actor->room == -1)) {
+            if (actor->id == ACTOR_EN_RU1) {
                 ruto = (EnRu1*)actor;
                 break;
             }
             actor = actor->next;
         }
+
+        // Being carried sets room=-1 below (global, survives room transitions),
+        // but a client whose local room already unloaded before that applied —
+        // or who joined/transitioned after the fact — has no Ruto actor at all
+        // anymore. Respawn her at the carried position so she never vanishes.
+        if (!ruto && carrying) {
+            const s16 params = (s16)eventData.value("params", 0);
+            Actor* spawned = Actor_Spawn(&gPlayState->actorCtx, gPlayState, ACTOR_EN_RU1,
+                                         x, y, z, 0, 0, 0, params);
+            ruto = (EnRu1*)spawned;
+        }
         if (!ruto) return;
 
         if (carrying) {
             ruto->actor.room = -1;
-            ruto->actor.world.pos.x = eventData.value("x", ruto->actor.world.pos.x);
-            ruto->actor.world.pos.y = eventData.value("y", ruto->actor.world.pos.y);
-            ruto->actor.world.pos.z = eventData.value("z", ruto->actor.world.pos.z);
+            ruto->actor.world.pos.x = x;
+            ruto->actor.world.pos.y = y;
+            ruto->actor.world.pos.z = z;
             ruto->actor.world.rot.y = (s16)eventData.value("rotY", (int)ruto->actor.world.rot.y);
             ruto->actor.shape.rot.y = ruto->actor.world.rot.y;
             ruto->actor.velocity.x = 0.0f;
@@ -376,10 +390,32 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
             }
         }
 
-        Actor* spawned = Actor_Spawn(&gPlayState->actorCtx, gPlayState, actorId,
-                                     pos.x, pos.y, pos.z,
-                                     rot.x, rot.y, rot.z,
-                                     params);
+        Actor* spawned = nullptr;
+        if (actorId == ACTOR_EN_BIGOKUTA) {
+            // BgBdanObjects (the Octo platform, params==0) drives its own state
+            // machine entirely through `this->dyna.actor.child` (checks
+            // child != NULL and reads/writes child->params) — a top-level
+            // Actor_Spawn never links back to the platform, so the platform
+            // stays stuck forever in WaitForBigOctoToStartBattle on this client.
+            Actor* platform = gPlayState->actorCtx.actorLists[ACTORCAT_BG].head;
+            while (platform != nullptr) {
+                if (platform->id == ACTOR_BG_BDAN_OBJECTS && platform->params == 0 &&
+                    (platform->room == packetRoom || platform->room == -1)) {
+                    break;
+                }
+                platform = platform->next;
+            }
+            if (platform != nullptr) {
+                spawned = Actor_SpawnAsChild(&gPlayState->actorCtx, platform, gPlayState, actorId,
+                                             pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, params);
+            }
+        }
+        if (spawned == nullptr) {
+            spawned = Actor_Spawn(&gPlayState->actorCtx, gPlayState, actorId,
+                                  pos.x, pos.y, pos.z,
+                                  rot.x, rot.y, rot.z,
+                                  params);
+        }
         if (spawned) {
             spawned->room = packetRoom;
         }
@@ -404,6 +440,34 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         suppressOcarinaRebroadcast = true;
         GameInteractor_ExecuteOnOcarinaSongAction();
         suppressOcarinaRebroadcast = false;
+
+    } else if (eventType == "OCARINA_TAG_COMPLETED") {
+        // Direct replication of a successfully-completed EnOkarinaTag check
+        // (e.g. Zora's River waterfall) for every peer within sync range — see
+        // the send-side comment in HookHandlers.cpp for why OCARINA_SONG_ACTION
+        // alone isn't enough here.
+        if (!gPlayState) return;
+        const Vec3f pos = {
+            eventData.value("x", 0.0f),
+            eventData.value("y", 0.0f),
+            eventData.value("z", 0.0f),
+        };
+        if (roomState.syncRadius > 0) {
+            Player* player = GET_PLAYER(gPlayState);
+            if (!player) return;
+            const f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+            if (Math3D_Vec3fDistSq(&player->actor.world.pos, &pos) > rSq) return;
+        }
+
+        const s16 switchFlag = (s16)eventData.value("switchFlag", -1);
+        const s16 type = (s16)eventData.value("type", 0);
+        if (switchFlag >= 0 && !Flags_GetSwitch(gPlayState, switchFlag)) {
+            Flags_SetSwitch(gPlayState, switchFlag);
+        }
+        if (type == 1) { // Zora's River Waterfall
+            Flags_SetEventChkInf(EVENTCHKINF_OPENED_ZORAS_DOMAIN);
+        }
+        Sfx_PlaySfxCentered(NA_SE_SY_CORRECT_CHIME);
 
     } else if (eventType == "BOSS_DEATH_COMMIT") {
         // Set hp=0 so the boss's own AI triggers its native death sequence
