@@ -1495,12 +1495,16 @@ void Anchor::RegisterHooks() {
             }
 
             // Broadcast TIME_SYNC whenever the freeze state changes (dungeon ↔
-            // overworld transition) and as a periodic safety-net every ~5 min.
+            // overworld transition) and as a periodic safety-net every ~3 seconds
+            // (60 frames). This was previously gated at 18000 frames (~15 min at
+            // 20fps), which let host/client dayTime drift by several minutes
+            // between syncs — 60 frames matches the packet's own documented
+            // cadence (see TimeSync.cpp) and keeps drift imperceptible.
             // Per-frame broadcast is intentionally avoided (causes drawbridge jitter).
             static bool  lastShouldFreeze   = false;
             static u32   lastTimeSyncFrame  = 0;
             const  u32   curFrame          = (u32)gPlayState->state.frames;
-            if ((shouldFreeze != lastShouldFreeze || (curFrame - lastTimeSyncFrame) >= 18000u)
+            if ((shouldFreeze != lastShouldFreeze || (curFrame - lastTimeSyncFrame) >= 60u)
                 && IsAnyClientInSameRoom()) {
                 SendPacket_TimeSync();
                 lastTimeSyncFrame = curFrame;
@@ -1947,6 +1951,30 @@ void Anchor::RegisterHooks() {
                     }
                 }
                 node = node->next;
+            }
+
+            // Song of Time blocks (ObjTimeblock) are the same story: their
+            // songObserverFunc only advances for the client whose own player is
+            // physically in range and attempting to play — forwarding msgCtx above
+            // does not make a remote peer's copy of the same block react, so the
+            // block only ever disappears for whoever actually played the song.
+            // Force-complete every nearby block directly for every peer.
+            if (player && gPlayState->msgCtx.lastPlayedSong == OCARINA_SONG_TIME) {
+                Actor* bgNode = gPlayState->actorCtx.actorLists[ACTORCAT_ITEMACTION].head;
+                while (bgNode != nullptr) {
+                    if (bgNode->id == ACTOR_OBJ_TIMEBLOCK && bgNode->xzDistToPlayer < 320.0f &&
+                        fabsf(player->actor.world.pos.y - bgNode->world.pos.y) < 120.0f) {
+                        nlohmann::json blockData;
+                        blockData["x"] = bgNode->world.pos.x;
+                        blockData["y"] = bgNode->world.pos.y;
+                        blockData["z"] = bgNode->world.pos.z;
+                        std::string key = "timeblock_" + std::to_string((int)bgNode->world.pos.x) + "_" +
+                                          std::to_string((int)bgNode->world.pos.y) + "_" +
+                                          std::to_string((int)bgNode->world.pos.z);
+                        SendPacket_RoomEvent("TIMEBLOCK_SONG_COMPLETE", key, blockData, false);
+                    }
+                    bgNode = bgNode->next;
+                }
             }
         }
     });

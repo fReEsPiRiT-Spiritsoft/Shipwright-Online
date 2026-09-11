@@ -21,5 +21,6 @@ typedef struct BgSpot02Objects {
 
 void func_808ACC34(BgSpot02Objects* bgSpot02Objects, PlayState* play);
 void func_808AC908(BgSpot02Objects* bgSpot02Objects, PlayState* play);
+void BgSpot02Objects_ForceExplodeRoyalTomb(BgSpot02Objects* bgSpot02Objects, PlayState* play);
 
 #endif

@@ -11,6 +11,8 @@ extern "C" {
 #include "src/overlays/actors/ovl_En_Ru1/z_en_ru1.h"
 #include "src/overlays/actors/ovl_Bg_Ydan_Sp/z_bg_ydan_sp.h"
 #include "src/overlays/actors/ovl_Boss_Goma/z_boss_goma.h"
+#include "src/overlays/actors/ovl_Bg_Spot02_Objects/z_bg_spot02_objects.h"
+#include "src/overlays/actors/ovl_Obj_Timeblock/z_obj_timeblock.h"
 extern PlayState* gPlayState;
 }
 
@@ -466,8 +468,51 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         }
         if (type == 1) { // Zora's River Waterfall
             Flags_SetEventChkInf(EVENTCHKINF_OPENED_ZORAS_DOMAIN);
+        } else if (type == 6 && !Flags_GetEventChkInf(EVENTCHKINF_DESTROYED_ROYAL_FAMILY_TOMB)) {
+            // Royal Family's Tomb (Sun's Song): the explosion is normally driven
+            // entirely by the master's own local cutscene context (csCtx), which
+            // never runs on a peer who didn't trigger it — force the same
+            // explosion/flag directly on the matching BG actor so every nearby
+            // player sees the grave open, not just whoever played the song.
+            Actor* tombActor = gPlayState->actorCtx.actorLists[ACTORCAT_BG].head;
+            while (tombActor != nullptr) {
+                if (tombActor->id == ACTOR_BG_SPOT02_OBJECTS && tombActor->params == 2) {
+                    BgSpot02Objects_ForceExplodeRoyalTomb((BgSpot02Objects*)tombActor, gPlayState);
+                    break;
+                }
+                tombActor = tombActor->next;
+            }
         }
         Sfx_PlaySfxCentered(NA_SE_SY_CORRECT_CHIME);
+
+    } else if (eventType == "TIMEBLOCK_SONG_COMPLETE") {
+        // See send-side comment in HookHandlers.cpp: ObjTimeblock's
+        // songObserverFunc only advances for the client whose own player is
+        // physically in range and attempting to play — force the same
+        // completion locally for every peer within sync range.
+        if (!gPlayState) return;
+        Vec3f pos = {
+            eventData.value("x", 0.0f),
+            eventData.value("y", 0.0f),
+            eventData.value("z", 0.0f),
+        };
+        if (roomState.syncRadius > 0) {
+            Player* player = GET_PLAYER(gPlayState);
+            if (!player) return;
+            const f32 rSq = (f32)roomState.syncRadius * (f32)roomState.syncRadius;
+            if (Math3D_Vec3fDistSq(&player->actor.world.pos, &pos) > rSq) return;
+        }
+        Actor* blockActor = gPlayState->actorCtx.actorLists[ACTORCAT_ITEMACTION].head;
+        while (blockActor != nullptr) {
+            if (blockActor->id == ACTOR_OBJ_TIMEBLOCK &&
+                fabsf(blockActor->world.pos.x - pos.x) < 1.0f &&
+                fabsf(blockActor->world.pos.y - pos.y) < 1.0f &&
+                fabsf(blockActor->world.pos.z - pos.z) < 1.0f) {
+                ObjTimeblock_ForceSongComplete((ObjTimeblock*)blockActor, gPlayState);
+                break;
+            }
+            blockActor = blockActor->next;
+        }
 
     } else if (eventType == "BOSS_DEATH_COMMIT") {
         // Set hp=0 so the boss's own AI triggers its native death sequence

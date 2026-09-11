@@ -181,6 +181,27 @@ void func_808ACAFC(BgSpot02Objects* this, PlayState* play) {
     }
 }
 
+// Network sync: the native explosion is gated on this client's own local
+// csCtx cutscene (see func_808AC908 above), which never runs for a peer who
+// didn't physically play Sun's Song here. Replicate the same effect directly
+// so every nearby player sees the Royal Family's Tomb open, not just whoever
+// played the song.
+void BgSpot02Objects_ForceExplodeRoyalTomb(BgSpot02Objects* this, PlayState* play) {
+    static Vec3f zeroVec = { 0.0f, 0.0f, 0.0f };
+    Vec3f pos;
+
+    if (GameInteractor_Should(VB_PLAY_ROYAL_FAMILY_TOMB_EXPLODE, true, this)) {
+        Audio_PlayActorSound2(&this->dyna.actor, NA_SE_EV_GRAVE_EXPLOSION);
+        Flags_SetEventChkInf(EVENTCHKINF_DESTROYED_ROYAL_FAMILY_TOMB);
+        this->timer = 25;
+        pos.x = (Math_SinS(this->dyna.actor.shape.rot.y) * 50.0f) + this->dyna.actor.world.pos.x;
+        pos.y = this->dyna.actor.world.pos.y + 30.0f;
+        pos.z = (Math_CosS(this->dyna.actor.shape.rot.y) * 50.0f) + this->dyna.actor.world.pos.z;
+        EffectSsBomb2_SpawnLayered(play, &pos, &zeroVec, &zeroVec, 70, 30);
+        this->actionFunc = func_808ACA08;
+    }
+}
+
 void func_808ACB58(BgSpot02Objects* this, PlayState* play) {
     if (Math_StepToF(&this->dyna.actor.world.pos.y, this->dyna.actor.home.pos.y + 255.0f, 1.0f)) {
         Audio_PlayActorSound2(&this->dyna.actor, NA_SE_EV_STONEDOOR_STOP);

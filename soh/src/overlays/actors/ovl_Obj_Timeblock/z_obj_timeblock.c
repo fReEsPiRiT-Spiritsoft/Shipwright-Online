@@ -207,6 +207,22 @@ void ObjTimeblock_SetupDoNothing(ObjTimeblock* this) {
 void ObjTimeblock_DoNothing(ObjTimeblock* this, PlayState* play) {
 }
 
+// Network sync: songObserverFunc only ever advances past ObjTimeblock_WaitForOcarina
+// for the client whose own local player is in range AND physically attempted to
+// play (PLAYER_STATE2_ATTEMPT_PLAY_FOR_ACTOR) — forwarding msgCtx.lastPlayedSong
+// alone does nothing for a remote peer's copy of this same block. This one-shot
+// observer makes the very next Update tick complete exactly like the native flow
+// (attention camera, demo effect, switch/visibility toggle), then restores normal
+// gating for subsequent plays.
+s32 ObjTimeblock_ForceComplete(ObjTimeblock* this, PlayState* play) {
+    this->songObserverFunc = ObjTimeblock_WaitForOcarina;
+    return true;
+}
+
+void ObjTimeblock_ForceSongComplete(ObjTimeblock* this, PlayState* play) {
+    this->songObserverFunc = ObjTimeblock_ForceComplete;
+}
+
 void ObjTimeblock_SetupNormal(ObjTimeblock* this) {
     this->actionFunc = ObjTimeblock_Normal;
 }
