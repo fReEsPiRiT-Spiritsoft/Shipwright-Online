@@ -9,7 +9,7 @@ This is a fork of Ship of Harkinian with the goal of implementing a host-authori
 
 - Original project: https://github.com/HarbourMasters/Shipwright
 - This fork builds on that base and adds extensive network synchronization systems for deterministic multiplayer gameplay.
-- Core focus: host-authority room logic, actor state syncing, boss transitions, item progression, and shared world events across connected clients..
+- Core focus: host-authority room logic, actor state syncing, boss transitions, item progression, and shared world events across connected clients.
 
 ---
 
