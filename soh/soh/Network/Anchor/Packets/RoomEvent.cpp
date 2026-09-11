@@ -447,7 +447,7 @@ void Anchor::HandlePacket_RoomEvent(nlohmann::json payload) {
         // the send-side comment in HookHandlers.cpp for why OCARINA_SONG_ACTION
         // alone isn't enough here.
         if (!gPlayState) return;
-        const Vec3f pos = {
+        Vec3f pos = {
             eventData.value("x", 0.0f),
             eventData.value("y", 0.0f),
             eventData.value("z", 0.0f),
